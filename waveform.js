@@ -1,4 +1,4 @@
-function showWaveform(audioUrl) {
+window.showWaveform = function(audioUrl) {
   const waveform = document.getElementById('waveform');
   waveform.style.display = "block";
   const ctx = waveform.getContext('2d');

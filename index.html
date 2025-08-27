@@ -1,29 +1,29 @@
 <!DOCTYPE html>
 <html lang="pt">
-    <head>
-        <meta charset="UTF-8">
-        <title>Gravador de Voz Simples</title>
-        <link rel="stylesheet" href="style.css">
-    </head>
-    <body>
-        <div class="container">
-        <aside id="history-section">
-            <h2>Histórico</h2>
-            <ul id="history-list"></ul>
-        </aside>
-            <main id="main-section">
-                <h1>Gravador de Voz</h1>
-                <button id="record-btn">Gravar</button>
-                <button id="stop-btn" disabled>Parar</button>
-                <p id="status"></p>
-                <audio id="audio-player" controls style="display: none;"></audio>
-                <button id="play-wave-btn" disabled>Ver Onda</button>
-                <canvas id="waveform" width="400" height="100" style="display: none; border:1px solid #ccc;"></canvas>
-            </main>
-        </div>
-
-        <script src="history.js"></script>
-        <script src="recorder.js"></script>
-        <script src="waveform.js"></script>
-    </body>
+<head>
+  <meta charset="UTF-8">
+  <title>VoxScripta - Gravador de Voz</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div class="container">
+    <aside id="history-section">
+      <h2>Histórico</h2>
+      <ul id="history-list"></ul>
+    </aside>
+    <main id="main-section">
+      <h1>Gravador de Voz</h1>
+      <div id="record-indicator"></div>
+      <button id="record-btn">Gravar</button>
+      <button id="stop-btn" disabled>Parar</button>
+      <p id="status"></p>
+      <audio id="audio-player" controls style="display: none;"></audio>
+      <button id="play-wave-btn" disabled>Ver Onda</button>
+      <canvas id="waveform" width="400" height="100" style="display: none; border:1px solid #ccc;"></canvas>
+    </main>
+  </div>
+  <script src="history.js"></script>
+  <script src="waveform.js"></script>
+  <script src="recorder.js"></script>
+</body>
 </html>
