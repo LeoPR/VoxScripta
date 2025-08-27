@@ -1,5 +1,5 @@
-// waveform.js - desenha espectro/forma de onda de uma URL de áudio
-// expõe window.showWaveform(audioUrl) que desenha no canvas #waveform
+// waveform.js - desenha a forma de onda (waveform)
+// expõe window.showWaveform(audioUrl)
 
 window.showWaveform = function(audioUrl) {
   const waveform = document.getElementById('waveform');
@@ -16,26 +16,23 @@ window.showWaveform = function(audioUrl) {
     .then(res => res.arrayBuffer())
     .then(arrayBuffer => audioCtx.decodeAudioData(arrayBuffer))
     .then(audioBuffer => {
-      const rawData = audioBuffer.getChannelData(0); // canal esquerdo/0
-      const samples = Math.min(800, rawData.length); // pontos máximos (limitar)
+      const rawData = audioBuffer.getChannelData(0); // Canal 0
+      const samples = waveform.width; // um ponto por pixel de largura
       const blockSize = Math.floor(rawData.length / samples) || 1;
       const filteredData = [];
       for (let i = 0; i < samples; i++) {
         let sum = 0;
         for (let j = 0; j < blockSize; j++) {
-          sum += Math.abs(rawData[i * blockSize + j] || 0);
+          sum += Math.abs(rawData[(i * blockSize) + j] || 0);
         }
         filteredData.push(sum / blockSize);
       }
-      // normaliza
       const max = Math.max(...filteredData) || 1;
-      const width = waveform.width;
-      const height = waveform.height;
-      ctx.clearRect(0, 0, width, height);
       ctx.beginPath();
+      const height = waveform.height;
       filteredData.forEach((val, i) => {
-        const x = Math.floor(i * width / filteredData.length);
-        const y = height - Math.round((val / max) * height);
+        const x = i;
+        const y = height - (val / max * height);
         if (i === 0) ctx.moveTo(x, y);
         else ctx.lineTo(x, y);
       });

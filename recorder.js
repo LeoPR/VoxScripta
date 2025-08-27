@@ -13,7 +13,7 @@ const nextBtn = document.getElementById('next-btn');
 const statusText = document.getElementById('status');
 const audioPlayer = document.getElementById('audio-player');
 const waveform = document.getElementById('waveform');
-const recordIndicator = document.getElementById('record-btn'); // reutiliza botão para visual; CSS dá destaque
+const spectrogramCanvas = document.getElementById('spectrogram');
 
 let audioCtx, analyser, sourceNode, animationId, liveStream;
 
@@ -31,6 +31,10 @@ window.onSelectRecording = function(idx) {
   if (typeof window.showWaveform === 'function') {
     window.showWaveform(rec.url);
   }
+  // mostra spectrogram automaticamente (padrões podem ser ajustados via window.spectrogramOptions)
+  if (typeof window.showSpectrogram === 'function') {
+    window.showSpectrogram(rec.url);
+  }
   // atualiza destaque visual do histórico
   if (typeof window.renderHistory === 'function') {
     window.renderHistory(recordings, currentIdx);
@@ -40,12 +44,12 @@ window.onSelectRecording = function(idx) {
 // navegação anterior/próximo
 prevBtn.addEventListener('click', () => {
   if (recordings.length === 0) return;
-  const next = Math.max(0, currentIdx - 1);
+  const next = currentIdx <= 0 ? 0 : currentIdx - 1;
   window.onSelectRecording(next);
 });
 nextBtn.addEventListener('click', () => {
   if (recordings.length === 0) return;
-  const next = Math.min(recordings.length - 1, (currentIdx === -1 ? recordings.length - 1 : currentIdx + 1));
+  const next = currentIdx >= recordings.length - 1 ? recordings.length - 1 : (currentIdx === -1 ? recordings.length - 1 : currentIdx + 1);
   window.onSelectRecording(next);
 });
 
@@ -55,7 +59,6 @@ recordBtn.addEventListener('click', async () => {
   statusText.textContent = "Gravando...";
   recordBtn.disabled = true;
   stopBtn.disabled = false;
-  // visual de gravação (apenas texto + destaque)
   recordBtn.classList.add('active');
 
   try {
@@ -77,6 +80,7 @@ recordBtn.addEventListener('click', async () => {
 
   // mostra canvas enquanto grava
   waveform.style.display = 'block';
+  spectrogramCanvas.style.display = 'block';
   drawLiveWaveform();
 
   mediaRecorder = new MediaRecorder(liveStream);
@@ -90,10 +94,7 @@ recordBtn.addEventListener('click', async () => {
     recordings.push({ url, blob, date: new Date() });
     // seleciona automaticamente a gravação nova
     currentIdx = recordings.length - 1;
-    // atualiza histórico (renderHistory usa currentIdx se fornecido)
-    if (typeof window.renderHistory === 'function') {
-      window.renderHistory(recordings, currentIdx);
-    }
+    if (typeof window.renderHistory === 'function') window.renderHistory(recordings, currentIdx);
     // seleciona e mostra
     window.onSelectRecording(currentIdx);
 
@@ -125,10 +126,11 @@ stopBtn.addEventListener('click', () => {
   }
 });
 
-// quando clicar no player, exibe a onda também (caso existente)
+// quando clicar no player, exibe a onda e espectrograma também (caso existente)
 audioPlayer.addEventListener('play', () => {
-  if (audioPlayer.src && typeof window.showWaveform === 'function') {
-    window.showWaveform(audioPlayer.src);
+  if (audioPlayer.src) {
+    if (typeof window.showWaveform === 'function') window.showWaveform(audioPlayer.src);
+    if (typeof window.showSpectrogram === 'function') window.showSpectrogram(audioPlayer.src);
   }
 });
 
@@ -149,7 +151,7 @@ function drawLiveWaveform() {
     for (let i = 0; i < width; i++) {
       const idx = Math.floor(i * bufferLength / width);
       const v = dataArray[idx] / 128.0; // centered around 1
-      const y = (v * 0.5) * height; // scale to canvas
+      const y = (v * 0.5) * height;
       const drawY = height / 2 + (y - height / 4);
       if (i === 0) ctx.moveTo(i, drawY);
       else ctx.lineTo(i, drawY);

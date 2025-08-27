@@ -26,12 +26,18 @@
       </div>
 
       <canvas id="waveform" width="800" height="160" class="waveform" style="display:none;"></canvas>
+
+      <!-- Spectrogram canvas below waveform -->
+      <div class="spectrogram-wrapper">
+        <canvas id="spectrogram" width="800" height="256" class="spectrogram" style="display:none;"></canvas>
+      </div>
     </section>
   </main>
 
-  <!-- Ordem dos scripts: history (renders), waveform (visual), recorder (lógica principal) -->
+  <!-- Ordem dos scripts: history (renders), waveform (visual), spectrogram (processing), recorder (lógica principal) -->
   <script src="history.js"></script>
   <script src="waveform.js"></script>
+  <script src="spectrogram.js"></script>
   <script src="recorder.js"></script>
 </body>
 </html>
