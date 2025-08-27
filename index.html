@@ -31,10 +31,15 @@
       <div class="spectrogram-wrapper">
         <canvas id="spectrogram" width="800" height="256" class="spectrogram" style="display:none;"></canvas>
       </div>
+
+      <!-- Processing indicator (spinner + progress) -->
+      <div id="processing-indicator" class="processing-indicator" style="display:none;" aria-hidden="true">
+        <div class="spinner" aria-hidden="true"></div>
+        <div id="processing-progress" class="processing-progress">Processando: 0%</div>
+      </div>
     </section>
   </main>
 
-  <!-- Ordem dos scripts: history (renders), waveform (visual), spectrogram (processing), recorder (lógica principal) -->
   <script src="history.js"></script>
   <script src="waveform.js"></script>
   <script src="spectrogram.js"></script>
