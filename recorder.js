@@ -39,7 +39,11 @@ recordBtn.addEventListener('click', async () => {
     const blob = new Blob(audioChunks, { type: 'audio/webm' });
     const url = URL.createObjectURL(blob);
     recordings.push({ url, blob, date: new Date() });
-    window.renderHistory(recordings);
+    if (typeof window.renderHistory === "function") {
+      window.renderHistory(recordings);
+    } else {
+      console.error("window.renderHistory não está definida");
+    }
     statusText.textContent = "Gravação salva!";
     audioPlayer.src = url;
     audioPlayer.style.display = "block";
@@ -61,14 +65,18 @@ recordBtn.addEventListener('click', async () => {
 });
 
 stopBtn.addEventListener('click', () => {
-  mediaRecorder.stop();
-  recordBtn.disabled = false;
-  stopBtn.disabled = true;
-  statusText.textContent = "Parado.";
+  if (mediaRecorder && mediaRecorder.state !== "inactive") {
+    mediaRecorder.stop();
+    recordBtn.disabled = false;
+    stopBtn.disabled = true;
+    statusText.textContent = "Parado.";
+  }
 });
 
 playWaveBtn.addEventListener('click', () => {
-  window.showWaveform(audioPlayer.src);
+  if (audioPlayer.src) {
+    window.showWaveform(audioPlayer.src);
+  }
 });
 
 function drawLiveWaveform() {

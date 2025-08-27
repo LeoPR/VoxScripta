@@ -20,7 +20,7 @@ window.renderHistory = function(recordings) {
       audioPlayer.load();
     };
     li.querySelector('button[data-wave]').onclick = () => {
-      showWaveform(rec.url);
+      window.showWaveform(rec.url);
     };
   });
 };
