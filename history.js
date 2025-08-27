@@ -1,26 +1,26 @@
-window.renderHistory = function(recordings) {
-  const historyList = document.getElementById('history-list');
-  historyList.innerHTML = '';
-  recordings.forEach((rec, idx) => {
-    const li = document.createElement('li');
-    li.innerHTML = `
-      <span>${rec.date.toLocaleTimeString()}</span>
-      <button data-idx="${idx}">Ouvir</button>
-      <button data-wave="${idx}">Ver Onda</button>
-    `;
-    historyList.appendChild(li);
+// history.js - renderiza a barra de histórico (topo).
+// NÃO declare elementos globais compartilhados aqui.
+// A função renderHistory cria itens clicáveis que chamam window.onSelectRecording(index).
 
-    li.querySelector('button[data-idx]').onclick = () => {
-      const audioPlayer = document.getElementById('audio-player');
-      const playWaveBtn = document.getElementById('play-wave-btn');
-      audioPlayer.src = rec.url;
-      audioPlayer.style.display = "block";
-      playWaveBtn.disabled = false;
-      document.getElementById('waveform').style.display = "none";
-      audioPlayer.load();
-    };
-    li.querySelector('button[data-wave]').onclick = () => {
-      window.showWaveform(rec.url);
-    };
+window.renderHistory = function(recordings, currentIdx = -1) {
+  const bar = document.getElementById('history-bar');
+  bar.innerHTML = '';
+  recordings.forEach((rec, idx) => {
+    const item = document.createElement('div');
+    item.className = 'history-item' + (idx === currentIdx ? ' selected' : '');
+    item.dataset.idx = idx;
+    // texto mínimo: hora e duração aproximada (se disponível)
+    const timeLabel = new Date(rec.date).toLocaleTimeString();
+    item.textContent = `${timeLabel}`;
+    // clique seleciona diretamente
+    item.addEventListener('click', () => {
+      if (typeof window.onSelectRecording === 'function') {
+        window.onSelectRecording(idx);
+      } else {
+        // função pode ainda não estar inicializada; mas só será chamada depois do carregamento normal
+        console.warn('onSelectRecording não definida ainda.');
+      }
+    });
+    bar.appendChild(item);
   });
 };

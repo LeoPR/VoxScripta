@@ -1,28 +1,35 @@
 <!DOCTYPE html>
 <html lang="pt">
 <head>
-  <meta charset="UTF-8">
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>VoxScripta - Gravador de Voz</title>
-  <link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="style.css" />
 </head>
 <body>
-  <div class="container">
-    <aside id="history-section">
-      <h2>Histórico</h2>
-      <ul id="history-list"></ul>
-    </aside>
-    <main id="main-section">
-      <h1>Gravador de Voz</h1>
-      <div id="record-indicator"></div>
-      <button id="record-btn">Gravar</button>
-      <button id="stop-btn" disabled>Parar</button>
-      <p id="status"></p>
-      <audio id="audio-player" controls style="display: none;"></audio>
-      <button id="play-wave-btn" disabled>Ver Onda</button>
-      <canvas id="waveform" width="400" height="100" style="display: none; border:1px solid #ccc;"></canvas>
-    </main>
-  </div>
-  <!-- Ordem dos scripts importa: history.js primeiro -->
+  <header>
+    <div id="history-bar" class="history-bar" aria-label="Histórico de gravações"></div>
+  </header>
+
+  <main class="main">
+    <section class="player-container">
+      <div class="player-box">
+        <button id="prev-btn" title="Anterior" class="control">⏮</button>
+        <button id="record-btn" title="Gravar" class="control record">●</button>
+        <button id="stop-btn" title="Parar" class="control" disabled>⏹</button>
+        <button id="next-btn" title="Próximo" class="control">⏭</button>
+
+        <div class="player-audio">
+          <audio id="audio-player" controls></audio>
+          <p id="status" class="status"></p>
+        </div>
+      </div>
+
+      <canvas id="waveform" width="800" height="160" class="waveform" style="display:none;"></canvas>
+    </section>
+  </main>
+
+  <!-- Ordem dos scripts: history (renders), waveform (visual), recorder (lógica principal) -->
   <script src="history.js"></script>
   <script src="waveform.js"></script>
   <script src="recorder.js"></script>
