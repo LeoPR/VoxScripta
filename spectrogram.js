@@ -5,29 +5,34 @@
 //   - hopSize: 512
 //   - colormap padrão: 'viridis'
 //
-// Há placeholders em window.spectrogramOptions para future features
-// como reassignment (spectral reassignment) e pitch (EAC), mas não foram implementados.
-// Se quiser implementar reassignment ou EAC, podemos adicionar processamento extra
-// e, idealmente, mover o processamento para um WebWorker para maior performance.
+// Implementação com proteções adicionais para evitar canvas "preto" quando
+// há valores inválidos, sinal curto ou ranges degenerados.
+//
+// Nota: reassignment/pitch (EAC) permanecem como placeholders.
 
 (function() {
-  // Defaults - você pode alterar window.spectrogramOptions externamente
   window.spectrogramOptions = {
-    fftSize: 2048,        // tamanho da FFT (potência de 2)
-    hopSize: 512,         // deslocamento entre janelas
-    nMels: 64,            // número de bandas mel
-    fmin: 0,              // frequência mínima (Hz)
-    fmax: null,           // frequência máxima (Hz) (null -> fs/2)
-    logScale: true,       // usar escala log (dB)
-    dynamicRange: 80,     // range dinâmico em dB para normalização
-    colormap: 'viridis',  // 'viridis' ou 'grayscale'
-    windowType: 'hann',   // atualmente apenas 'hann' é suportado
-    // placeholders (não implementados): reassignment, pitch (EAC)
+    fftSize: 2048,
+    hopSize: 512,
+    nMels: 64,
+    fmin: 0,
+    fmax: null,
+    logScale: true,
+    dynamicRange: 80,
+    colormap: 'viridis',
+    windowType: 'hann',
     enableReassignment: false,
     computePitchEAC: false
   };
 
-  // ---------- FFT (in-place Cooley-Tukey radix-2) ----------
+  // ---------- utilidades ----------
+  function isPowerOfTwo(x) {
+    return (x & (x - 1)) === 0;
+  }
+  function nextPowerOfTwo(x) {
+    return 1 << Math.ceil(Math.log2(x));
+  }
+
   function bitReverse(n, bits) {
     let rev = 0;
     for (let i = 0; i < bits; i++) {
@@ -42,7 +47,6 @@
     const bits = Math.log2(n);
     if (!Number.isInteger(bits)) throw new Error('fft size must be power of 2');
 
-    // bit-reversal permutation
     for (let i = 0; i < n; i++) {
       const j = bitReverse(i, bits);
       if (j > i) {
@@ -72,16 +76,15 @@
     }
   }
 
-  // Hann window
   function hannWindow(size) {
     const w = new Float32Array(size);
+    if (size === 1) { w[0] = 1.0; return w; }
     for (let i = 0; i < size; i++) {
       w[i] = 0.5 * (1 - Math.cos((2 * Math.PI * i) / (size - 1)));
     }
     return w;
   }
 
-  // mel helpers
   function hzToMel(f) {
     return 2595 * Math.log10(1 + f / 700);
   }
@@ -91,6 +94,7 @@
 
   function createMelFilterbank(nMels, fftSize, sampleRate, fmin, fmax) {
     fmax = fmax || sampleRate / 2;
+    if (fmin < 0) fmin = 0;
     const melMin = hzToMel(fmin);
     const melMax = hzToMel(fmax);
     const meltabs = new Float32Array(nMels + 2);
@@ -106,19 +110,21 @@
       const center = meltabs[m + 1];
       const upper = meltabs[m + 2];
       const filter = new Float32Array(binFreqs.length);
+      const leftDen = (center - lower) || 1e-9;
+      const rightDen = (upper - center) || 1e-9;
       for (let k = 0; k < binFreqs.length; k++) {
         const f = binFreqs[k];
         if (f >= lower && f <= center) {
-          filter[k] = (f - lower) / (center - lower);
+          filter[k] = (f - lower) / leftDen;
         } else if (f >= center && f <= upper) {
-          filter[k] = (upper - f) / (upper - center);
+          filter[k] = (upper - f) / rightDen;
         } else {
           filter[k] = 0;
         }
       }
       fb.push(filter);
     }
-    return fb; // array of Float32Array length fftSize/2+1
+    return fb;
   }
 
   function applyMelFilterbank(magSpectrum, melFilters) {
@@ -128,7 +134,11 @@
       let sum = 0;
       const filter = melFilters[m];
       for (let k = 0; k < filter.length; k++) {
-        sum += magSpectrum[k] * filter[k];
+        const f = filter[k];
+        if (f) {
+          const v = magSpectrum[k];
+          if (isFinite(v)) sum += v * f;
+        }
       }
       out[m] = sum;
     }
@@ -139,19 +149,22 @@
     const out = new Float32Array(array.length);
     const amin = 1e-10;
     for (let i = 0; i < array.length; i++) {
-      out[i] = 20 * Math.log10(Math.max(array[i], amin) / ref);
+      const val = Math.max(array[i], amin);
+      out[i] = 20 * Math.log10(val / ref);
     }
     return out;
   }
 
-  // simple colormap: viridis-like approximation or grayscale
   function colorMap(value, colormap) {
-    // value: 0..1
+    let v = Number(value);
+    if (!isFinite(v)) v = 0;
+    if (v < 0) v = 0;
+    if (v > 1) v = 1;
     if (colormap === 'grayscale') {
-      const v = Math.round(value * 255);
-      return [v, v, v, 255];
+      const c = Math.round(v * 255);
+      return [c, c, c, 255];
     }
-    // Viridis-ish (approx) gradient stops
+    // viridis-like stops
     const stops = [
       [68, 1, 84],
       [59, 82, 139],
@@ -159,7 +172,7 @@
       [94, 201, 98],
       [253, 231, 37]
     ];
-    const t = value * (stops.length - 1);
+    const t = v * (stops.length - 1);
     const i = Math.floor(t);
     const frac = t - i;
     const a = stops[Math.max(0, Math.min(stops.length - 1, i))];
@@ -170,27 +183,31 @@
     return [r, g, bl, 255];
   }
 
-  // main function exposed
+  // ---------- principal ----------
   window.showSpectrogram = function(audioUrl, options = {}) {
     const opts = Object.assign({}, window.spectrogramOptions, options);
 
-    // ensure fftSize is power of 2
     let fftSize = opts.fftSize;
-    if (!Number.isInteger(Math.log2(fftSize))) {
-      // choose next power of two
-      const p = Math.ceil(Math.log2(fftSize));
-      fftSize = 1 << p;
-      console.warn(`spectrogram: fftSize adjusted to next power of two: ${fftSize}`);
+    if (!isPowerOfTwo(fftSize)) {
+      const newSize = nextPowerOfTwo(fftSize);
+      console.warn(`spectrogram: fftSize ${fftSize} não é potência de 2. Ajustando para ${newSize}.`);
+      fftSize = newSize;
     }
+    const hopSize = opts.hopSize > 0 ? opts.hopSize : Math.floor(fftSize / 4);
+    const nMels = Math.max(1, opts.nMels);
 
     const spectCanvas = document.getElementById('spectrogram');
+    if (!spectCanvas) return;
     if (!audioUrl) {
       spectCanvas.style.display = 'none';
       return;
     }
     spectCanvas.style.display = 'block';
     const ctx = spectCanvas.getContext('2d');
-    ctx.clearRect(0, 0, spectCanvas.width, spectCanvas.height);
+
+    // ensure canvas minimal visible bg
+    ctx.fillStyle = '#000';
+    ctx.fillRect(0, 0, spectCanvas.width, spectCanvas.height);
 
     const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
     fetch(audioUrl)
@@ -198,122 +215,144 @@
       .then(arrayBuffer => audioCtx.decodeAudioData(arrayBuffer))
       .then(audioBuffer => {
         const fs = audioBuffer.sampleRate;
-        const hopSize = opts.hopSize;
-        const nMels = opts.nMels;
-        const fmin = opts.fmin;
+        const fmin = Math.max(0, opts.fmin || 0);
         const fmax = opts.fmax || fs / 2;
 
-        const signal = audioBuffer.getChannelData(0); // use channel 0
-
-        // choose window function
-        let windowFunc;
-        if (opts.windowType === 'hann') {
-          windowFunc = hannWindow(fftSize);
-        } else {
-          // fallback to hann if unknown
-          windowFunc = hannWindow(fftSize);
+        const signal = audioBuffer.getChannelData(0) || new Float32Array(0);
+        if (!signal || signal.length === 0) {
+          console.warn('spectrogram: sinal vazio.');
+          spectCanvas.style.display = 'none';
+          return;
         }
 
+        const windowFunc = (opts.windowType === 'hann') ? hannWindow(fftSize) : hannWindow(fftSize);
         const melFilters = createMelFilterbank(nMels, fftSize, fs, fmin, fmax);
 
-        // frame count
-        const frames = Math.max(0, Math.floor((signal.length - fftSize) / hopSize) + 1);
+        let frames = Math.max(0, Math.floor((signal.length - fftSize) / hopSize) + 1);
         if (frames <= 0) {
-          console.warn('spectrogram: sinal muito curto para os parâmetros de janela/shift');
+          // fallback: zero-pad to fftSize and produce single frame
+          frames = 1;
         }
 
-        // prepare image buffer: width = frames, height = nMels
-        const width = Math.max(1, frames);
-        const height = nMels;
-        spectCanvas.width = Math.min(1200, Math.max(200, width)); // cap width
-        spectCanvas.height = Math.min(512, Math.max(100, height));
+        // prepare canvas sizes based on frames and nMels but capping to reasonable sizes
+        const desiredW = Math.min(1200, Math.max(200, frames));
+        const desiredH = Math.min(512, Math.max(100, nMels));
+        spectCanvas.width = desiredW;
+        spectCanvas.height = desiredH;
         const imageW = spectCanvas.width;
         const imageH = spectCanvas.height;
         const imageData = ctx.createImageData(imageW, imageH);
 
-        // map frames -> canvas pixels horizontally (could downsample if frames > imageW)
         const frameStep = frames / imageW;
 
-        // pre-allocate arrays
+        // pre-alloc arrays for FFT
         const re = new Float32Array(fftSize);
         const im = new Float32Array(fftSize);
 
-        // compute mel spectrogram (frames x nMels)
+        // compute mel spectrogram
         const melSpec = new Float32Array(frames * nMels);
         for (let f = 0; f < frames; f++) {
           const offset = f * hopSize;
-          // windowed frame
           for (let i = 0; i < fftSize; i++) {
             const s = signal[offset + i] || 0;
             re[i] = s * windowFunc[i];
             im[i] = 0;
           }
-          // FFT (in-place)
-          fftComplex(re, im);
-          // magnitude for first fftSize/2+1 bins
-          const mag = new Float32Array(fftSize / 2 + 1);
-          for (let k = 0; k < mag.length; k++) {
-            mag[k] = Math.sqrt(re[k] * re[k] + im[k] * im[k]);
+          // FFT
+          try {
+            fftComplex(re, im);
+          } catch (err) {
+            console.error('spectrogram FFT error:', err);
+            spectCanvas.style.display = 'none';
+            return;
           }
-          // apply mel filters
+          // magnitude
+          const half = fftSize / 2 + 1;
+          const mag = new Float32Array(half);
+          for (let k = 0; k < half; k++) {
+            const rr = re[k];
+            const ii = im[k];
+            const m = Math.sqrt((isFinite(rr) ? rr * rr : 0) + (isFinite(ii) ? ii * ii : 0));
+            mag[k] = isFinite(m) ? m : 0;
+          }
+          // mel
           const melFrame = applyMelFilterbank(mag, melFilters);
-          // store
-          for (let m = 0; m < nMels; m++) melSpec[f * nMels + m] = melFrame[m];
-        }
-
-        // convert to dB if requested
-        const ref = 1.0;
-        let melDb = new Float32Array(melSpec.length);
-        if (opts.logScale) {
-          const tmp = toDb(melSpec, ref);
-          melDb.set(tmp);
-        } else {
-          melDb.set(melSpec);
-        }
-
-        // normalize to 0..1 using dynamicRange for dB or max for linear
-        let minVal = Number.POSITIVE_INFINITY;
-        let maxVal = Number.NEGATIVE_INFINITY;
-        if (opts.logScale) {
-          for (let i = 0; i < melDb.length; i++) {
-            if (melDb[i] > maxVal) maxVal = melDb[i];
-            if (melDb[i] < minVal) minVal = melDb[i];
+          for (let m = 0; m < nMels; m++) {
+            melSpec[f * nMels + m] = isFinite(melFrame[m]) ? melFrame[m] : 0;
           }
+        }
+
+        // to dB if requested
+        let melDb;
+        if (opts.logScale) {
+          // choose a reference: median or max of melSpec to avoid huge negative dB
+          let maxVal = 0;
+          for (let i = 0; i < melSpec.length; i++) if (melSpec[i] > maxVal) maxVal = melSpec[i];
+          const ref = maxVal > 0 ? maxVal : 1.0;
+          melDb = toDb(melSpec, ref);
+        } else {
+          melDb = new Float32Array(melSpec);
+        }
+
+        // normalization to 0..1
+        let minVal = Infinity, maxVal = -Infinity;
+        for (let i = 0; i < melDb.length; i++) {
+          const v = melDb[i];
+          if (!isFinite(v)) continue;
+          if (v < minVal) minVal = v;
+          if (v > maxVal) maxVal = v;
+        }
+        if (!isFinite(minVal) || !isFinite(maxVal)) {
+          // degenerate case, fill with zeros
+          for (let i = 0; i < melDb.length; i++) melDb[i] = 0;
+          minVal = 0; maxVal = 1;
+        }
+
+        if (opts.logScale) {
           const top = maxVal;
           const bottom = Math.max(maxVal - opts.dynamicRange, minVal);
-          // map value to 0..1
+          const denom = (top - bottom) || 1e-6;
           for (let i = 0; i < melDb.length; i++) {
-            melDb[i] = (melDb[i] - bottom) / (top - bottom);
-            if (melDb[i] < 0) melDb[i] = 0;
-            if (melDb[i] > 1) melDb[i] = 1;
+            let nv = (melDb[i] - bottom) / denom;
+            if (!isFinite(nv)) nv = 0;
+            if (nv < 0) nv = 0;
+            if (nv > 1) nv = 1;
+            melDb[i] = nv;
           }
         } else {
-          // linear normalization
+          const denom = (maxVal - minVal) || 1e-6;
           for (let i = 0; i < melDb.length; i++) {
-            if (melDb[i] > maxVal) maxVal = melDb[i];
-            if (melDb[i] < minVal) minVal = melDb[i];
-          }
-          const range = maxVal - minVal || 1;
-          for (let i = 0; i < melDb.length; i++) {
-            melDb[i] = (melDb[i] - minVal) / range;
+            let nv = (melDb[i] - minVal) / denom;
+            if (!isFinite(nv)) nv = 0;
+            if (nv < 0) nv = 0;
+            if (nv > 1) nv = 1;
+            melDb[i] = nv;
           }
         }
 
-        // draw: top frequency (highest mel) at top of canvas
-        // for each canvas pixel x, pick corresponding frame index (nearest)
+        // draw: top frequency at top of canvas
         for (let x = 0; x < imageW; x++) {
-          const frameIdx = Math.floor(x * frameStep);
+          // nearest frame
+          const frameIdx = Math.min(frames - 1, Math.max(0, Math.floor(x * frameStep)));
           const base = frameIdx * nMels;
           for (let y = 0; y < imageH; y++) {
-            // map canvas y to mel bin (imageH rows -> nMels)
-            const melIdx = Math.floor((1 - y / imageH) * (nMels - 1)); // invert vertical
-            const v = melDb[Math.max(0, Math.min(nMels - 1, base + melIdx))] || 0;
+            // map canvas y to mel bin (invert vertical)
+            const melIdx = Math.floor((1 - y / imageH) * (nMels - 1));
+            const idx = base + melIdx;
+            let v = 0;
+            if (idx >= 0 && idx < melDb.length) {
+              const vv = melDb[idx];
+              v = (isFinite(vv) ? vv : 0);
+            }
+            // clamp
+            if (v < 0) v = 0;
+            if (v > 1) v = 1;
             const color = colorMap(v, opts.colormap);
             const pix = (y * imageW + x) * 4;
             imageData.data[pix] = color[0];
             imageData.data[pix + 1] = color[1];
             imageData.data[pix + 2] = color[2];
-            imageData.data[pix + 3] = color[3];
+            imageData.data[pix + 3] = 255; // force opaque
           }
         }
 
@@ -321,7 +360,7 @@
       })
       .catch(err => {
         console.error('Erro ao gerar espectrograma:', err);
-        document.getElementById('spectrogram').style.display = 'none';
+        spectCanvas.style.display = 'none';
       });
   };
 
