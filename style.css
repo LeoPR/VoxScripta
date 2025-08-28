@@ -2,130 +2,159 @@
   --bg: #fafafa;
   --panel: #ffffff;
   --muted: #f3f3f3;
-  --accent: #0077cc;
+  --accent: #7b3fe4;
   --accent-contrast: #ffffff;
   --danger: #ff3b30;
   --text: #222;
-  --soft-shadow: 0 6px 18px rgba(0,0,0,0.08);
+  --soft-shadow: 0 8px 30px rgba(20,20,20,0.06);
+  --card-radius: 12px;
 }
 
-/* Layout principal */
 body {
   background: var(--bg);
   color: var(--text);
-  font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial;
-  margin: 0;
-  padding: 16px;
-  box-sizing: border-box;
+  font-family: Inter, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial;
+  padding: 20px;
 }
 
-.main { display:flex; justify-content:center; align-items:flex-start; width:100%; }
+.main {
+  display: flex;
+  justify-content: center;
+  padding-bottom: 40px;
+}
 
-/* Player container centralizado */
 .player-container {
   width: 100%;
   max-width: 940px;
   display: flex;
   flex-direction: column;
-  align-items: center;
-  gap: 14px;
-  margin: 0 auto;
+  gap: 18px;
+  align-items: stretch;
 }
 
-/* Caixa dos controles (botões) */
 .player-box {
   display: flex;
   align-items: center;
-  gap: 10px;
-  background: var(--panel);
-  padding: 12px 14px;
-  border-radius: 12px;
+  gap: 12px;
+  background: linear-gradient(180deg, #fff, #fbfbfb);
+  padding: 14px;
+  border-radius: var(--card-radius);
   box-shadow: var(--soft-shadow);
   width: 100%;
-  justify-content: center; /* centra os botões horizontalmente */
 }
 
-/* Botões principais */
-.control {
+.player-box > button, .player-box > .controls > button {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 44px;
-  height: 44px;
-  border-radius: 8px;
+  width: 48px;
+  height: 48px;
+  border-radius: 10px;
   border: none;
   background: linear-gradient(180deg, #fff, #f6f6f6);
-  box-shadow: 0 2px 6px rgba(0,0,0,0.08);
+  box-shadow: 0 6px 14px rgba(0,0,0,0.06);
   cursor: pointer;
   font-size: 18px;
+  transition: transform .08s ease, box-shadow .12s ease;
 }
-.control:disabled { opacity: 0.5; cursor: default; }
-
-/* botão gravar destacado */
 .control.record {
-  width: 52px;
-  height: 52px;
-  background: radial-gradient(circle at 30% 30%, #ff6666, #d83b3b);
+  width: 56px;
+  height: 56px;
+  border-radius: 12px;
+  background: linear-gradient(180deg,#ff6b6b,#d83b3b);
   color: white;
   font-weight: 700;
-  box-shadow: 0 6px 18px rgba(216,59,59,0.18);
+  box-shadow: 0 12px 30px rgba(216,59,59,0.18);
 }
+.control:disabled { opacity: 0.45; cursor: default; transform: none; box-shadow: 0 3px 8px rgba(0,0,0,0.04); }
 
-/* Área do player de áudio */
 .player-audio {
+  margin-left: auto;
   display: flex;
-  flex-direction: column;
   align-items: center;
-  gap: 6px;
-  margin-left: 8px;
+  gap: 12px;
 }
+.status { margin: 0; color: #444; font-size: 14px; }
 
-/* histórico e barras */
+/* Histórico - abas */
 .history-bar {
   width: 100%;
   max-width: 940px;
   display: flex;
-  gap: 8px;
-  padding: 8px 6px;
+  gap: 10px;
+  padding: 10px 8px;
   overflow-x: auto;
   box-sizing: border-box;
-  margin-bottom: 12px;
+  margin-bottom: 10px;
 }
 
-/* Canvas */
+.history-tab {
+  background: rgba(123,63,228,0.14); /* mais visível */
+  border-radius: 8px;
+  padding: 8px 16px;
+  font-size: 15px;
+  color: #333;
+  box-shadow: 0 2px 8px rgba(123,63,228,0.08);
+  cursor: pointer;
+  border: 2px solid transparent;
+  transition: background .18s, border .18s;
+}
+.history-tab:hover { background: rgba(123,63,228,0.25); }
+.history-tab.active {
+  background: rgba(123,63,228,0.36);
+  border: 2px solid var(--accent);
+  color: var(--accent);
+  font-weight: 600;
+}
+
+/* Canvas padronizados */
 .waveform, .spectrogram {
   width: 100%;
   max-width: 940px;
-  border-radius: 8px;
+  height: 180px;
+  border-radius: 10px;
   background: linear-gradient(180deg, #fff, #fbfbfb);
   box-shadow: 0 4px 10px rgba(0,0,0,0.04);
+  display: block;
+  margin: 0 auto;
 }
 
-/* Processing indicator (preservei o trecho que já adicionamos) */
+/* Processing indicator */
 .processing-indicator {
-  position: relative;
-  display: flex;
+  margin: 12px auto 0 auto;
+  display: inline-flex;
   align-items: center;
   gap: 12px;
-  margin-top: 10px;
-  padding: 8px 12px;
-  background: rgba(0,0,0,0.6);
+  padding: 8px 14px;
+  background: rgba(20,20,20,0.75);
   color: #fff;
-  border-radius: 10px;
-  width: fit-content;
-  box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+  border-radius: 12px;
+  box-shadow: 0 10px 20px rgba(0,0,0,0.12);
+  min-width: 140px;
+  justify-content: center;
 }
+
 .processing-indicator .spinner {
   width: 18px;
   height: 18px;
   border-radius: 50%;
-  border: 3px solid rgba(255,255,255,0.2);
+  border: 3px solid rgba(255,255,255,0.18);
   border-top-color: rgba(255,255,255,0.95);
   animation: spin 1s linear infinite;
 }
 .processing-progress { font-size: 13px; margin:0; color:#fff; }
 
 @keyframes spin {
-  from { transform: rotate(0deg); }
-  to { transform: rotate(360deg); }
+  from { transform: rotate(0deg); } to { transform: rotate(360deg); }
+}
+
+.center { display:flex; justify-content:center; align-items:center; }
+.hidden { display:none !important; }
+
+@media (max-width: 640px) {
+  .player-box { padding: 10px; gap: 8px; }
+  .control, .player-box > button { width: 40px; height: 40px; }
+  .control.record { width: 48px; height: 48px; }
+  .waveform, .spectrogram { height: 120px; }
+  .history-tab { padding: 6px 8px; font-size: 13px; }
 }
