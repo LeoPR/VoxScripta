@@ -1,5 +1,5 @@
 // recorder.js — integra persistência por sessão (IndexedDB), painel lateral com renome/apagar/export/import.
-// Mantenha este arquivo no lugar do seu recorder.js atual. Fiz o mínimo de mudanças para não quebrar nada.
+// Versão atualizada: adiciona showWaveform() para desenhar waveform estática ao selecionar gravação.
 
 let mediaRecorder;
 let audioChunks = [];
@@ -244,9 +244,83 @@ async function selectSession(id) {
   renderRecordingsList(recordings);
 }
 
+// ------------------------------
+// NEW: showWaveform + static waveform drawing
+// ------------------------------
+async function showWaveform(source) {
+  // source: Blob or URL string
+  try {
+    // stop live waveform animation if running
+    if (animationId) { cancelAnimationFrame(animationId); animationId = null; }
+    let arrayBuffer;
+    if (source instanceof Blob) {
+      arrayBuffer = await source.arrayBuffer();
+    } else if (typeof source === 'string') {
+      // fetch the URL (object URLs are fine)
+      const resp = await fetch(source);
+      arrayBuffer = await resp.arrayBuffer();
+    } else {
+      console.warn('showWaveform: fonte não suportada', source);
+      return;
+    }
+    const aCtx = new (window.AudioContext || window.webkitAudioContext)();
+    // decodeAudioData may be promise-based or callback-based; modern browsers return a Promise
+    const audioBuffer = await aCtx.decodeAudioData(arrayBuffer.slice(0));
+    const samples = audioBuffer.getChannelData(0);
+    drawWaveformFromSamples(samples);
+    // close temporary AudioContext
+    aCtx.close().catch(()=>{});
+  } catch (err) {
+    console.error('Erro em showWaveform:', err);
+  }
+}
+
+function drawWaveformFromSamples(samples) {
+  const dpr = window.devicePixelRatio || 1;
+  const container = waveform.parentElement || document.body;
+  const w = Math.min(940, container.clientWidth || 940);
+  const h = parseInt(getComputedStyle(waveform).height, 10) || 180;
+
+  waveform.width = Math.round(w * dpr);
+  waveform.height = Math.round(h * dpr);
+  waveform.style.width = w + 'px';
+  waveform.style.height = h + 'px';
+
+  const ctx = waveform.getContext('2d');
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, w, h);
+
+  // background
+  ctx.fillStyle = '#ffffff';
+  ctx.fillRect(0, 0, w, h);
+
+  ctx.lineWidth = 1;
+  ctx.strokeStyle = '#1976d2';
+  ctx.beginPath();
+
+  // we draw min/max vertical lines per pixel column for a compact representation
+  const step = Math.max(1, Math.floor(samples.length / w));
+  for (let i = 0; i < w; i++) {
+    const start = i * step;
+    let min = 1.0, max = -1.0;
+    for (let j = 0; j < step && (start + j) < samples.length; j++) {
+      const v = samples[start + j];
+      if (v < min) min = v;
+      if (v > max) max = v;
+    }
+    const y1 = (1 - (min + 1) / 2) * h;
+    const y2 = (1 - (max + 1) / 2) * h;
+    ctx.moveTo(i + 0.5, y1);
+    ctx.lineTo(i + 0.5, y2);
+  }
+  ctx.stroke();
+}
+
 // seleciona gravação (no UI)
 function selectRecordingInUI(idx, rec) {
   currentIdx = idx;
+  // stop live waveform animation if running (we will draw static waveform)
+  if (animationId) { cancelAnimationFrame(animationId); animationId = null; }
   if (rec && rec.url) {
     audioPlayer.src = rec.url;
     audioPlayer.load();
@@ -259,7 +333,15 @@ function selectRecordingInUI(idx, rec) {
   renderRecordingsList(recordings);
   // também processa (reprocess) para exibir espectrograma
   if (rec && rec.blob) {
-    processAndPlayBlob(rec.blob);
+    // show static waveform from the blob (decodes and draws)
+    showWaveform(rec.blob).catch(()=>{});
+    // process and show spectrogram (this will also set audioPlayer.src to processed wav blob)
+    processAndPlayBlob(rec.blob).catch(()=>{});
+  } else if (rec && rec.url) {
+    // fallback: try to fetch via URL
+    showWaveform(rec.url).catch(()=>{});
+    // process by fetching the URL and passing its blob
+    fetch(rec.url).then(r => r.blob()).then(b => processAndPlayBlob(b)).catch(()=>{});
   }
 }
 
@@ -373,7 +455,6 @@ function blobToBase64(blob) {
     const fr = new FileReader();
     fr.onload = () => {
       const dataUrl = fr.result;
-      // Data URL: "data:audio/wav;base64,...."
       const comma = dataUrl.indexOf(',');
       resolve(dataUrl.slice(comma + 1));
     };
@@ -388,7 +469,6 @@ function base64ToBlob(base64) {
 // ------------------------------
 // Spectrogram worker + rendering (mantenho a versão robusta já usada)
 // ------------------------------
-// (mesma implementação que você já tem — preferir carregar spectrogram.worker.js externo)
 const _vendorFFT = `(function(){class FFT{constructor(n){if(!Number.isInteger(Math.log2(n)))throw new Error('FFT size must be power of 2');this.n=n;this._buildReverseTable();this._buildTwiddles();}_buildReverseTable(){const n=this.n;const bits=Math.log2(n);this.rev=new Uint32Array(n);for(let i=0;i<n;i++){let x=i;let y=0;for(let j=0;j<bits;j++){y=(y<<1)|(x&1);x>>=1;}this.rev[i]=y;}}_buildTwiddles(){const n=this.n;this.cos=new Float32Array(n/2);this.sin=new Float32Array(n/2);for(let i=0;i<n/2;i++){const angle=-2*Math.PI*i/n;this.cos[i]=Math.cos(angle);this.sin[i]=Math.sin(angle);}}transform(real,imag){const n=this.n;const rev=this.rev;for(let i=0;i<n;i++){const j=rev[i];if(j>i){const tr=real[i];real[i]=real[j];real[j]=tr;const ti=imag[i];imag[i]=imag[j];imag[j]=ti;}}for(let size=2;size<=n;size<<=1){const half=size>>>1;const step=this.n/size;for(let i=0;i<n;i+=size){let k=0;for(let j=i;j<i+half;j++){const cos=this.cos[k];const sin=this.sin[k];const l=j+half;const tre=cos*real[l]-sin*imag[l];const tim=cos*imag[l]+sin*real[l];real[l]=real[j]-tre;imag[l]=imag[j]-tim;real[j]+=tre;imag[j]+=tim;k+=step;}}}}}if(typeof self!=='undefined')self.FFT=FFT;if(typeof window!=='undefined')window.FFT=FFT;})();`;
 
 const _workerCode = `(function(){
