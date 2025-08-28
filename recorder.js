@@ -1,9 +1,9 @@
-// recorder.js — HiDPI, offscreen scaling do espectrograma, tenta carregar worker externo (fallback inline)
-// Cole este arquivo no lugar do seu recorder.js atual.
+// recorder.js — integra persistência por sessão (IndexedDB), painel lateral com renome/apagar/export/import.
+// Mantenha este arquivo no lugar do seu recorder.js atual. Fiz o mínimo de mudanças para não quebrar nada.
 
 let mediaRecorder;
 let audioChunks = [];
-let recordings = [];
+let recordings = []; // array em memória para "Sessão atual" (antes de salvar)
 let currentIdx = -1;
 
 const recordBtn = document.getElementById('record-btn');
@@ -18,9 +18,14 @@ const spectrogramCanvas = document.getElementById('spectrogram');
 const processingIndicator = document.getElementById('processing-indicator');
 const processingProgress = document.getElementById('processing-progress');
 
+const saveSessionBtn = document.getElementById('save-session-btn');
+const exportSessionBtn = document.getElementById('export-session-btn');
+const importSessionInput = document.getElementById('import-session-input');
+
 let audioCtx, analyser, sourceNode, animationId, liveStream;
 let spectrogramWorker = null;
 
+// --- processingOptions (mantive igual) ---
 window.processingOptions = {
   agc: {
     targetRMS: 0.08,
@@ -36,10 +41,356 @@ window.processingOptions = {
   }
 };
 
-// Vendor FFT (used for inline fallback)
+// ------------------------------
+// INDEXEDDB (útil mínimo)
+// ------------------------------
+const DB_NAME = 'vox_db';
+const DB_VERSION = 1;
+const STORE_SESSIONS = 'sessions';
+let dbPromise = null;
+
+function openDb() {
+  if (dbPromise) return dbPromise;
+  dbPromise = new Promise((resolve, reject) => {
+    const req = indexedDB.open(DB_NAME, DB_VERSION);
+    req.onupgradeneeded = (ev) => {
+      const db = ev.target.result;
+      if (!db.objectStoreNames.contains(STORE_SESSIONS)) {
+        const store = db.createObjectStore(STORE_SESSIONS, { keyPath: 'id', autoIncrement: true });
+        store.createIndex('date', 'date', { unique: false });
+      }
+    };
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
+  return dbPromise;
+}
+
+async function saveSessionToDb(session) {
+  const db = await openDb();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE_SESSIONS, 'readwrite');
+    const store = tx.objectStore(STORE_SESSIONS);
+    const putReq = store.add(session);
+    putReq.onsuccess = () => resolve(putReq.result);
+    putReq.onerror = () => reject(putReq.error);
+  });
+}
+
+async function getAllSessionsFromDb() {
+  const db = await openDb();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE_SESSIONS, 'readonly');
+    const store = tx.objectStore(STORE_SESSIONS);
+    const req = store.getAll();
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
+}
+
+async function getSessionById(id) {
+  const db = await openDb();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE_SESSIONS, 'readonly');
+    const store = tx.objectStore(STORE_SESSIONS);
+    const req = store.get(id);
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
+}
+
+async function deleteSessionFromDb(id) {
+  const db = await openDb();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE_SESSIONS, 'readwrite');
+    const store = tx.objectStore(STORE_SESSIONS);
+    const req = store.delete(id);
+    req.onsuccess = () => resolve(true);
+    req.onerror = () => reject(req.error);
+  });
+}
+
+async function updateSessionInDb(session) {
+  const db = await openDb();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE_SESSIONS, 'readwrite');
+    const store = tx.objectStore(STORE_SESSIONS);
+    const req = store.put(session);
+    req.onsuccess = () => resolve(true);
+    req.onerror = () => reject(req.error);
+  });
+}
+
+// ------------------------------
+// UI: Sessões + Gravações (painel esquerdo)
+// ------------------------------
+let sessionsCache = []; // carregado do DB
+let selectedSessionId = null;
+let currentSessionRecordings = []; // gravações da sessão selecionada carregadas da DB
+
+function renderSessionsList() {
+  const container = document.getElementById('sessions-list');
+  container.innerHTML = '';
+  sessionsCache.sort((a,b) => b.date - a.date);
+  sessionsCache.forEach(s => {
+    const item = document.createElement('div');
+    item.className = 'session-item' + (s.id === selectedSessionId ? ' selected' : '');
+    const title = document.createElement('div');
+    title.textContent = s.name || `Sessão ${new Date(s.date).toLocaleString()}`;
+    item.appendChild(title);
+    const right = document.createElement('div');
+    right.style.display = 'flex';
+    right.style.gap = '6px';
+    const del = document.createElement('button');
+    del.className = 'small';
+    del.textContent = 'Apagar';
+    del.onclick = async (ev) => {
+      ev.stopPropagation();
+      if (!confirm('Apagar sessão "' + (s.name || '') + '"?')) return;
+      await deleteSessionFromDb(s.id);
+      await loadSessions();
+    };
+    right.appendChild(del);
+    item.appendChild(right);
+    item.onclick = () => selectSession(s.id);
+    container.appendChild(item);
+  });
+  if (sessionsCache.length === 0) {
+    container.innerHTML = '<div style="color:#666;font-size:13px;">Nenhuma sessão salva</div>';
+  }
+}
+
+function renderRecordingsList(list) {
+  const container = document.getElementById('recordings-list');
+  container.innerHTML = '';
+  const arr = list || [];
+  arr.forEach((rec, idx) => {
+    const item = document.createElement('div');
+    item.className = 'recording-item' + (idx === currentIdx ? ' selected' : '');
+    const name = document.createElement('div');
+    name.className = 'recording-name';
+    name.textContent = rec.name || `Gravação ${idx+1}`;
+    item.appendChild(name);
+
+    const meta = document.createElement('div');
+    meta.className = 'recording-meta';
+    meta.textContent = new Date(rec.date).toLocaleString();
+    item.appendChild(meta);
+
+    const play = document.createElement('button');
+    play.className = 'play-btn';
+    play.textContent = '▶';
+    play.onclick = (ev) => {
+      ev.stopPropagation();
+      selectRecordingInUI(idx, rec);
+    };
+    item.appendChild(play);
+
+    const rename = document.createElement('button');
+    rename.className = 'rename-btn';
+    rename.textContent = '✏️';
+    rename.onclick = (ev) => {
+      ev.stopPropagation();
+      const input = document.createElement('input');
+      input.type = 'text';
+      input.value = rec.name || '';
+      input.onkeydown = (e) => {
+        if (e.key === 'Enter') {
+          rec.name = input.value;
+          saveChangesToSessionRecording(rec);
+        }
+      };
+      input.onblur = () => {
+        rec.name = input.value;
+        saveChangesToSessionRecording(rec);
+      };
+      name.innerHTML = '';
+      name.appendChild(input);
+      input.focus();
+    };
+    item.appendChild(rename);
+
+    const del = document.createElement('button');
+    del.className = 'delete-btn';
+    del.textContent = '🗑️';
+    del.onclick = (ev) => {
+      ev.stopPropagation();
+      if (!confirm('Apagar gravação?')) return;
+      deleteRecordingFromSession(rec.id);
+    };
+    item.appendChild(del);
+
+    item.onclick = () => selectRecordingInUI(idx, rec);
+    container.appendChild(item);
+  });
+  if (arr.length === 0) {
+    container.innerHTML = '<div style="color:#666;font-size:13px;">Nenhuma gravação nesta sessão</div>';
+  }
+}
+
+// seleciona uma sessão (carrega gravações)
+async function selectSession(id) {
+  selectedSessionId = id;
+  const sess = await getSessionById(id);
+  currentSessionRecordings = (sess && sess.recordings) ? sess.recordings.slice() : [];
+  // atualiza o player/recordings em memória a partir da sessão selecionada
+  recordings = currentSessionRecordings.map(r => ({ id: r.id, name: r.name, date: r.date, blob: r.blob, url: URL.createObjectURL(r.blob) }));
+  currentIdx = recordings.length > 0 ? 0 : -1;
+  if (currentIdx >= 0) {
+    audioPlayer.src = recordings[0].url;
+    audioPlayer.load();
+  }
+  await loadSessions();
+  renderRecordingsList(recordings);
+}
+
+// seleciona gravação (no UI)
+function selectRecordingInUI(idx, rec) {
+  currentIdx = idx;
+  if (rec && rec.url) {
+    audioPlayer.src = rec.url;
+    audioPlayer.load();
+  } else if (rec && rec.blob) {
+    const url = URL.createObjectURL(rec.blob);
+    rec.url = url;
+    audioPlayer.src = url;
+    audioPlayer.load();
+  }
+  renderRecordingsList(recordings);
+  // também processa (reprocess) para exibir espectrograma
+  if (rec && rec.blob) {
+    processAndPlayBlob(rec.blob);
+  }
+}
+
+// salva gravação atual (após alteração de nome) de volta à sessão e atualiza DB
+async function saveChangesToSessionRecording(updatedRec) {
+  // atualiza currentSessionRecordings
+  for (let i = 0; i < currentSessionRecordings.length; i++) {
+    if (currentSessionRecordings[i].id === updatedRec.id) {
+      currentSessionRecordings[i].name = updatedRec.name;
+      break;
+    }
+  }
+  // atualiza DB
+  const sess = await getSessionById(selectedSessionId);
+  if (!sess) return;
+  sess.recordings = currentSessionRecordings;
+  await updateSessionInDb(sess);
+  // atualiza UI
+  recordings = currentSessionRecordings.map(r => ({ id: r.id, name: r.name, date: r.date, blob: r.blob, url: URL.createObjectURL(r.blob) }));
+  renderRecordingsList(recordings);
+  await loadSessions();
+}
+
+// deleta gravação da sessão (e do DB)
+async function deleteRecordingFromSession(recId) {
+  const sess = await getSessionById(selectedSessionId);
+  if (!sess) return;
+  sess.recordings = (sess.recordings || []).filter(r => r.id !== recId);
+  await updateSessionInDb(sess);
+  await selectSession(selectedSessionId);
+}
+
+// carrega sessions e atualiza UI
+async function loadSessions() {
+  sessionsCache = await getAllSessionsFromDb();
+  renderSessionsList();
+}
+
+// botão "Salvar sessão" — salva gravações correntes como nova sessão
+saveSessionBtn.addEventListener('click', async () => {
+  if (!recordings || recordings.length === 0) {
+    alert('Nenhuma gravação para salvar nesta sessão.');
+    return;
+  }
+  const name = prompt('Nome da sessão:', `Sessão ${new Date().toLocaleString()}`);
+  if (!name) return;
+  // preparar objetos que serão salvos no DB (copiar blobs)
+  const recsForDb = recordings.map((r, idx) => ({
+    id: Date.now() + idx,
+    name: r.name || `Gravação ${idx+1}`,
+    date: r.date || new Date().toISOString(),
+    blob: r.blob || r.blob // blob existente
+  }));
+  const session = {
+    name,
+    date: Date.now(),
+    recordings: recsForDb
+  };
+  await saveSessionToDb(session);
+  await loadSessions();
+  alert('Sessão salva.');
+});
+
+// botão export (exporta sessão selecionada)
+exportSessionBtn.addEventListener('click', async () => {
+  if (!selectedSessionId) { alert('Selecione uma sessão para exportar.'); return; }
+  const sess = await getSessionById(selectedSessionId);
+  if (!sess) { alert('Sessão não encontrada.'); return; }
+  // converter blobs para base64
+  const recs = await Promise.all((sess.recordings || []).map(async (r) => {
+    const b = r.blob;
+    const base64 = await blobToBase64(b);
+    return { id: r.id, name: r.name, date: r.date, blobBase64: base64 };
+  }));
+  const out = { name: sess.name, date: sess.date, recordings: recs };
+  const blob = new Blob([JSON.stringify(out, null, 2)], { type: 'application/json' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = `${(sess.name||'session').replace(/\s+/g,'_')}-${sess.date}.json`;
+  a.click();
+});
+
+// importar sessão (arquivo JSON com base64)
+importSessionInput.addEventListener('change', async (ev) => {
+  const f = ev.target.files && ev.target.files[0];
+  if (!f) return;
+  try {
+    const text = await f.text();
+    const obj = JSON.parse(text);
+    if (!obj || !obj.recordings) throw new Error('Formato inválido');
+    // converter base64 de cada gravação para blob
+    const recs = await Promise.all(obj.recordings.map(async (r) => {
+      const blob = await base64ToBlob(r.blobBase64);
+      return { id: r.id || (Date.now()+Math.random()), name: r.name || '', date: r.date || Date.now(), blob };
+    }));
+    const session = { name: obj.name || `Import ${new Date().toLocaleString()}`, date: Date.now(), recordings: recs };
+    await saveSessionToDb(session);
+    await loadSessions();
+    alert('Sessão importada com sucesso.');
+  } catch (err) {
+    console.error(err);
+    alert('Erro ao importar: ' + err.message);
+  } finally {
+    importSessionInput.value = '';
+  }
+});
+
+// helpers base64/blobs
+function blobToBase64(blob) {
+  return new Promise((resolve, reject) => {
+    const fr = new FileReader();
+    fr.onload = () => {
+      const dataUrl = fr.result;
+      // Data URL: "data:audio/wav;base64,...."
+      const comma = dataUrl.indexOf(',');
+      resolve(dataUrl.slice(comma + 1));
+    };
+    fr.onerror = reject;
+    fr.readAsDataURL(blob);
+  });
+}
+function base64ToBlob(base64) {
+  return fetch('data:application/octet-stream;base64,' + base64).then(r => r.blob());
+}
+
+// ------------------------------
+// Spectrogram worker + rendering (mantenho a versão robusta já usada)
+// ------------------------------
+// (mesma implementação que você já tem — preferir carregar spectrogram.worker.js externo)
 const _vendorFFT = `(function(){class FFT{constructor(n){if(!Number.isInteger(Math.log2(n)))throw new Error('FFT size must be power of 2');this.n=n;this._buildReverseTable();this._buildTwiddles();}_buildReverseTable(){const n=this.n;const bits=Math.log2(n);this.rev=new Uint32Array(n);for(let i=0;i<n;i++){let x=i;let y=0;for(let j=0;j<bits;j++){y=(y<<1)|(x&1);x>>=1;}this.rev[i]=y;}}_buildTwiddles(){const n=this.n;this.cos=new Float32Array(n/2);this.sin=new Float32Array(n/2);for(let i=0;i<n/2;i++){const angle=-2*Math.PI*i/n;this.cos[i]=Math.cos(angle);this.sin[i]=Math.sin(angle);}}transform(real,imag){const n=this.n;const rev=this.rev;for(let i=0;i<n;i++){const j=rev[i];if(j>i){const tr=real[i];real[i]=real[j];real[j]=tr;const ti=imag[i];imag[i]=imag[j];imag[j]=ti;}}for(let size=2;size<=n;size<<=1){const half=size>>>1;const step=this.n/size;for(let i=0;i<n;i+=size){let k=0;for(let j=i;j<i+half;j++){const cos=this.cos[k];const sin=this.sin[k];const l=j+half;const tre=cos*real[l]-sin*imag[l];const tim=cos*imag[l]+sin*real[l];real[l]=real[j]-tre;imag[l]=imag[j]-tim;real[j]+=tre;imag[j]+=tim;k+=step;}}}}}if(typeof self!=='undefined')self.FFT=FFT;if(typeof window!=='undefined')window.FFT=FFT;})();`;
 
-// Worker core (inline fallback)
 const _workerCode = `(function(){
   function hannWindow(size){const w=new Float32Array(size);if(size===1){w[0]=1.0;return w;}for(let i=0;i<size;i++){w[i]=0.5*(1-Math.cos((2*Math.PI*i)/(size-1)));}return w;}
   function hzToMel(f){return 2595*Math.log10(1+f/700);}
@@ -144,7 +495,7 @@ const _workerCode = `(function(){
   });
 })();`;
 
-// Setup message handler from worker
+// Setup handler from worker
 function setupWorkerHandlers(worker) {
   if (!worker) return;
   worker.onmessage = (ev) => {
@@ -164,7 +515,7 @@ function setupWorkerHandlers(worker) {
   };
 }
 
-// Try to load external worker first; fallback inline if not possible
+// Try external worker, else fallback inline
 async function ensureWorker() {
   if (spectrogramWorker) return spectrogramWorker;
   try {
@@ -184,7 +535,7 @@ async function ensureWorker() {
   }
 }
 
-// UI helpers
+// UI helpers (mantive)
 function showProcessing(show, percent = 0) {
   if (show) {
     processingIndicator.style.display = 'flex';
@@ -195,63 +546,51 @@ function showProcessing(show, percent = 0) {
   }
 }
 
-// HiDPI: render em offscreen e escalar para canvas visível (mantém nitidez e ocupa espaço do layout)
+// render spectrogram usando offscreen -> drawImage (mantive a lógica anterior)
 function drawSpectrogramPixels(srcWidth, srcHeight, pixels) {
   const dpr = window.devicePixelRatio || 1;
-
-  // escolha a largura visual baseada no container do canvas (mantém layout)
   const container = spectrogramCanvas.parentElement || document.body;
   const containerStyleWidth = container.clientWidth || 940;
   const visualMaxWidth = Math.min(940, containerStyleWidth);
   const visualWidth = visualMaxWidth;
   const aspect = srcHeight / srcWidth;
   const visualHeight = Math.max(80, Math.round(visualWidth * aspect));
-
-  // offscreen no tamanho fonte
   const off = document.createElement('canvas');
   off.width = srcWidth;
   off.height = srcHeight;
   const offCtx = off.getContext('2d');
   offCtx.putImageData(new ImageData(pixels, srcWidth, srcHeight), 0, 0);
-
-  // visible canvas HiDPI
   spectrogramCanvas.width = Math.round(visualWidth * dpr);
   spectrogramCanvas.height = Math.round(visualHeight * dpr);
   spectrogramCanvas.style.width = visualWidth + 'px';
   spectrogramCanvas.style.height = visualHeight + 'px';
-
   const ctx = spectrogramCanvas.getContext('2d');
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   ctx.imageSmoothingEnabled = true;
   ctx.imageSmoothingQuality = 'high';
-
   ctx.clearRect(0, 0, visualWidth, visualHeight);
   ctx.drawImage(off, 0, 0, srcWidth, srcHeight, 0, 0, visualWidth, visualHeight);
   spectrogramCanvas.style.display = 'block';
 }
 
-// Draw waveform live — use container width (não fixo)
+// waveform live (mantive similar)
 function drawLiveWaveform() {
   if (!analyser) return;
   const bufferLength = analyser.fftSize;
   const dataArray = new Uint8Array(bufferLength);
   const dpr = window.devicePixelRatio || 1;
-
   const container = waveform.parentElement || document.body;
   const w = Math.min(940, container.clientWidth || 940);
   const h = parseInt(getComputedStyle(waveform).height, 10) || 180;
-
   waveform.width = Math.round(w * dpr);
   waveform.height = Math.round(h * dpr);
   waveform.style.width = w + 'px';
   waveform.style.height = h + 'px';
   const ctx = waveform.getContext('2d');
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-
   function draw() {
     analyser.getByteTimeDomainData(dataArray);
     ctx.clearRect(0, 0, w, h);
-
     ctx.beginPath();
     for (let i = 0; i < w; i++) {
       const idx = Math.floor(i * bufferLength / w);
@@ -264,13 +603,12 @@ function drawLiveWaveform() {
     ctx.strokeStyle = "#1976d2";
     ctx.lineWidth = 2;
     ctx.stroke();
-
     animationId = requestAnimationFrame(draw);
   }
   draw();
 }
 
-// AGC, WAV encoder, processAndPlayBlob and rest
+// AGC, WAV encoder e processAndPlayBlob (mantive a lógica anterior e integro com persistência)
 function applyAGC(signal, targetRMS = 0.08, maxGain = 8, limiterThreshold = 0.99) {
   let sum = 0;
   for (let i = 0; i < signal.length; i++) {
@@ -282,7 +620,6 @@ function applyAGC(signal, targetRMS = 0.08, maxGain = 8, limiterThreshold = 0.99
   let gain = targetRMS / (rms + eps);
   if (!isFinite(gain) || gain <= 0) gain = 1;
   if (gain > maxGain) gain = maxGain;
-
   const out = new Float32Array(signal.length);
   for (let i = 0; i < signal.length; i++) {
     let v = signal[i] * gain;
@@ -369,7 +706,7 @@ async function processAndPlayBlob(blob) {
   }
 }
 
-// history and UI interactions
+// interface com histórico — quando selecionar gravação fora de sessões (mantive compatibilidade)
 window.onSelectRecording = function(idx) {
   if (idx < 0 || idx >= recordings.length) return;
   currentIdx = idx;
@@ -378,11 +715,11 @@ window.onSelectRecording = function(idx) {
   audioPlayer.style.display = 'block';
   audioPlayer.load();
   statusText.textContent = `Selecionado: ${new Date(rec.date).toLocaleString()}`;
-  if (typeof window.showWaveform === 'function') window.showWaveform(rec.url);
   processAndPlayBlob(rec.blob);
   if (typeof window.renderHistory === 'function') window.renderHistory(recordings, currentIdx);
 };
 
+// navegação
 prevBtn.addEventListener('click', () => {
   if (recordings.length === 0) return;
   const next = currentIdx <= 0 ? 0 : currentIdx - 1;
@@ -394,6 +731,7 @@ nextBtn.addEventListener('click', () => {
   window.onSelectRecording(next);
 });
 
+// gravação
 recordBtn.addEventListener('click', async () => {
   audioChunks = [];
   statusText.textContent = "Gravando...";
@@ -430,13 +768,21 @@ recordBtn.addEventListener('click', async () => {
   mediaRecorder.onstop = async () => {
     const blob = new Blob(audioChunks, { type: 'audio/webm' });
     const url = URL.createObjectURL(blob);
-    recordings.push({ url, blob, date: new Date() });
+    const recObj = {
+      id: Date.now() + Math.floor(Math.random() * 1000),
+      name: `Gravação ${recordings.length + 1}`,
+      date: new Date().toISOString(),
+      blob
+    };
+    // adiciona à lista em memória (sessão corrente não salva até o usuário salvar)
+    recordings.push({ id: recObj.id, name: recObj.name, date: recObj.date, blob: recObj.blob, url });
     currentIdx = recordings.length - 1;
-    if (typeof window.renderHistory === 'function') window.renderHistory(recordings, currentIdx);
+    renderRecordingsList(recordings);
 
+    // processa e mostra espectrograma
     await processAndPlayBlob(blob);
 
-    statusText.textContent = "Gravação salva!";
+    statusText.textContent = "Gravação salva (tempo local).";
     recordBtn.disabled = false;
     stopBtn.disabled = true;
     recordBtn.classList.remove('active');
@@ -449,6 +795,7 @@ recordBtn.addEventListener('click', async () => {
   mediaRecorder.start();
 });
 
+// parar
 stopBtn.addEventListener('click', () => {
   if (mediaRecorder && mediaRecorder.state !== 'inactive') {
     mediaRecorder.stop();
@@ -456,12 +803,18 @@ stopBtn.addEventListener('click', () => {
   }
 });
 
+// player ao tocar
 audioPlayer.addEventListener('play', () => {
   if (audioPlayer.src) {
-    if (typeof window.showWaveform === 'function') window.showWaveform(audioPlayer.src);
+    // nada extra necessário
   }
 });
 
-if (typeof window.renderHistory === 'function') {
-  window.renderHistory(recordings, currentIdx);
-}
+// inicialização UI: carrega sessões existentes
+(async function init() {
+  try {
+    await loadSessions();
+  } catch (err) {
+    console.warn('Erro ao carregar sessões:', err);
+  }
+})();

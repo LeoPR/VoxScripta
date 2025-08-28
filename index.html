@@ -1,48 +1,54 @@
-<!DOCTYPE html>
-<html lang="pt">
+<!doctype html>
+<html lang="pt-BR">
 <head>
-  <meta charset="UTF-8" />
+  <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>VoxScripta - Gravador de Voz</title>
-  <link rel="stylesheet" href="style.css" />
+  <title>VoxScripta - Gravador</title>
+  <link rel="stylesheet" href="style.css">
 </head>
 <body>
-  <header>
-    <div id="history-bar" class="history-bar" aria-label="Histórico de gravações"></div>
-  </header>
-
-  <main class="main">
-    <section class="player-container">
-      <div class="player-box">
-        <button id="prev-btn" title="Anterior" class="control">⏮</button>
-        <button id="record-btn" title="Gravar" class="control record">●</button>
-        <button id="stop-btn" title="Parar" class="control" disabled>⏹</button>
-        <button id="next-btn" title="Próximo" class="control">⏭</button>
-
-        <div class="player-audio">
-          <audio id="audio-player" controls></audio>
-          <p id="status" class="status"></p>
+  <div class="main">
+    <!-- Painel histórico / sessões (esquerda) -->
+    <aside class="history-panel" id="history-panel">
+      <div class="history-header">
+        <div style="display:flex;gap:8px;align-items:center;">
+          <button id="save-session-btn" class="small">Salvar sessão</button>
+          <button id="export-session-btn" class="small">Exportar</button>
+          <label class="small file-label">Importar
+            <input id="import-session-input" type="file" accept=".json" style="display:none">
+          </label>
         </div>
       </div>
+      <div id="sessions-list" class="sessions-list"></div>
+      <div class="history-divider"></div>
+      <div id="recordings-list" class="recordings-list"></div>
+    </aside>
 
-      <canvas id="waveform" width="800" height="160" class="waveform" style="display:none;"></canvas>
-
-      <!-- Spectrogram canvas below waveform -->
-      <div class="spectrogram-wrapper">
-        <canvas id="spectrogram" width="800" height="256" class="spectrogram" style="display:none;"></canvas>
+    <!-- Área principal -->
+    <section class="player-container">
+      <div class="player-box">
+        <div class="controls">
+          <button id="prev-btn" class="control">⏮</button>
+          <button id="record-btn" class="control record">●</button>
+          <button id="stop-btn" class="control" disabled>■</button>
+          <button id="next-btn" class="control">⏭</button>
+        </div>
+        <div class="player-audio">
+          <audio id="audio-player" controls class="player-audio-element"></audio>
+        </div>
+        <p id="status" class="status">Pronto</p>
       </div>
 
-      <!-- Processing indicator (spinner + progress) -->
-      <div id="processing-indicator" class="processing-indicator" style="display:none;" aria-hidden="true">
-        <div class="spinner" aria-hidden="true"></div>
-        <div id="processing-progress" class="processing-progress">Processando: 0%</div>
+      <canvas id="waveform" class="waveform"></canvas>
+      <canvas id="spectrogram" class="spectrogram"></canvas>
+
+      <div id="processing-indicator" class="processing-indicator hidden">
+        <div class="spinner"></div>
+        <p id="processing-progress" class="processing-progress">Processando: 0%</p>
       </div>
     </section>
-  </main>
+  </div>
 
-  <script src="history.js"></script>
-  <script src="waveform.js"></script>
-  <script src="spectrogram.js"></script>
   <script src="recorder.js"></script>
 </body>
 </html>
