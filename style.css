@@ -166,6 +166,13 @@ body {
   box-shadow: 0 12px 30px rgba(216,59,59,0.18);
 }
 
+/* Estado visual enquanto aguardando inicialização/permissão */
+.control.pending {
+  box-shadow: 0 6px 14px rgba(0,0,0,0.06), 0 0 0 8px rgba(255,165,0,0.06);
+  transform: scale(0.98);
+  transition: transform 120ms ease, box-shadow 120ms ease;
+}
+
 /* Canvas padronizados */
 .waveform, .spectrogram {
   width: 100%;

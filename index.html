@@ -4,6 +4,10 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>VoxScripta - Gravador</title>
+
+  <!-- pequeno favicon inline (evita 404) -->
+  <link rel="icon" href='data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32"><rect width="100%" height="100%" fill="%237b3fe4"/><circle cx="16" cy="16" r="8" fill="%23fff"/></svg>'>
+
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
@@ -13,9 +17,12 @@
       <div class="history-header">
         <div style="display:flex;gap:8px;align-items:center;">
           <button id="save-session-btn" class="small">Salvar sessão</button>
-          <button id="export-session-btn" class="small">Exportar</button>
-          <label class="small file-label">Importar
+          <button id="export-session-btn" class="small">Exportar sessão</button>
+          <label class="small file-label">Importar sessão
             <input id="import-session-input" type="file" accept=".json" style="display:none">
+          </label>
+          <label class="small file-label">Importar gravação
+            <input id="import-recording-input" type="file" accept="audio/*" style="display:none">
           </label>
         </div>
       </div>
@@ -49,6 +56,11 @@
     </section>
   </div>
 
+  <!-- ordem correta: utilitários primeiro, depois db, audio, por fim recorder -->
+  <script src="history.js"></script>
+  <script src="spectrogram.js"></script>
+  <script src="db.js"></script>
+  <script src="audio.js"></script>
   <script src="recorder.js"></script>
 </body>
 </html>
