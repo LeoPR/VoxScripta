@@ -1,6 +1,6 @@
-// recorder.js — versão completa (com persistRecording não-bloqueante).
-// Substitua o seu recorder.js por este arquivo (backup antes).
-// Mantive a lógica anterior e a função persistRecording introduzida para gravações temporárias.
+// recorder.js — versão integrada com config.js (usa window.appConfig)
+// Mantive a lógica existente (persistRecording, waveform, sessões) e adicionei logs de telemetria
+// para o espectrograma (quando o worker retornar msg.timings).
 
 let mediaRecorder;
 let audioChunks = [];
@@ -26,21 +26,13 @@ const importRecordingInput = document.getElementById('import-recording-input');
 
 let audioCtx, analyser, sourceNode, animationId, liveStream;
 
-// --- processingOptions (mantive igual) ---
-window.processingOptions = window.processingOptions || {
-  agc: {
-    targetRMS: 0.08,
-    maxGain: 8,
-    limiterThreshold: 0.99
-  },
-  spectrogram: {
-    fftSize: 2048,
-    hopSize: 512,
-    nMels: 64,
-    windowType: 'hann',
-    colormap: 'viridis'
+// util para obter config mesclada
+function _getCfg() {
+  if (window.appConfig && typeof window.appConfig.getMergedProcessingOptions === 'function') {
+    return window.appConfig.getMergedProcessingOptions();
   }
-};
+  return window.processingOptions || {};
+}
 
 // ------------------------------
 // Helpers local (base64/blobs)
@@ -62,11 +54,19 @@ function base64ToBlob(base64, type='application/octet-stream') {
 }
 
 // ------------------------------
-// UI: Sessões + Gravações (painel esquerdo)
+// API para sessions.js (exposição controlada)
 // ------------------------------
-let sessionsCache = []; // carregado do DB (via window.getAllSessionsFromDb)
-let selectedSessionId = null;
-let currentSessionRecordings = []; // gravações da sessão selecionada carregadas (pode conter blobs)
+window.getWorkspaceRecordings = function() {
+  return recordings;
+};
+window.setWorkspaceRecordings = function(arr) {
+  recordings = Array.isArray(arr) ? arr : [];
+  try { renderRecordingsList(recordings); } catch(e){ /* ignore */ }
+};
+window.appendWorkspaceRecording = function(rec) {
+  recordings.push(rec);
+  try { renderRecordingsList(recordings); } catch(e){ /* ignore */ }
+};
 
 // ------------------------------
 // Função playRecording
@@ -137,55 +137,12 @@ async function persistRecording(blob, suggestedName) {
 }
 
 // ------------------------------
-// Render sessions list
+// Render sessions list (delegado para sessions.js - função aqui apenas para compatibilidade)
 // ------------------------------
 function renderSessionsList() {
-  const container = document.getElementById('sessions-list');
-  container.innerHTML = '';
-  sessionsCache.sort((a,b) => b.date - a.date);
-  sessionsCache.forEach(s => {
-    const item = document.createElement('div');
-    item.className = 'session-item' + (s.id === selectedSessionId ? ' selected' : '');
-    const title = document.createElement('div');
-    title.textContent = s.name || `Sessão ${new Date(s.date).toLocaleString()}`;
-    item.appendChild(title);
-    const right = document.createElement('div');
-    right.style.display = 'flex';
-    right.style.gap = '6px';
-
-    const expBtn = document.createElement('button');
-    expBtn.className = 'small';
-    expBtn.textContent = 'Exportar';
-    expBtn.onclick = async (ev) => {
-      ev.stopPropagation();
-      if (typeof window.exportSessionById === 'function') {
-        await window.exportSessionById(s.id);
-      } else {
-        await exportSessionById(s.id);
-      }
-    };
-    right.appendChild(expBtn);
-
-    const del = document.createElement('button');
-    del.className = 'small';
-    del.textContent = 'Apagar';
-    del.onclick = async (ev) => {
-      ev.stopPropagation();
-      if (!confirm('Apagar sessão "' + (s.name || '') + '"?')) return;
-      if (typeof window.deleteSessionFromDb === 'function') {
-        await window.deleteSessionFromDb(s.id);
-      } else {
-        await deleteSessionFromDb(s.id);
-      }
-      await loadSessions().catch(err => console.warn('loadSessions erro após apagar:', err));
-    };
-    right.appendChild(del);
-    item.appendChild(right);
-    item.onclick = () => selectSession(s.id);
-    container.appendChild(item);
-  });
-  if (sessionsCache.length === 0) {
-    container.innerHTML = '<div style="color:#666;font-size:13px;">Nenhuma sessão salva</div>';
+  // sessions.js faz o render real; mantemos stub para compatibilidade
+  if (typeof window.renderSessionsList === 'function') {
+    window.renderSessionsList();
   }
 }
 
@@ -352,56 +309,10 @@ function renderRecordingsList(list) {
 // selecionar sessão (carrega gravações)
 // ------------------------------
 async function selectSession(id) {
-  selectedSessionId = id;
-  let sess = null;
-  try {
-    if (typeof window.getSessionById === 'function') {
-      sess = await window.getSessionById(id);
-    } else {
-      sess = await getSessionById(id);
-    }
-  } catch (err) {
-    console.warn('selectSession: erro ao obter sessão:', err);
-    sess = null;
+  // delegado para sessions.js; exposto sempre via window.selectSession
+  if (typeof window.selectSession === 'function') {
+    return window.selectSession(id);
   }
-
-  const recObjs = [];
-  const refs = (sess && sess.recordings) ? sess.recordings : [];
-  for (const r of refs) {
-    if (!r) continue;
-    if (typeof r === 'number' || typeof r === 'string') {
-      if (typeof window.getRecordingById === 'function') {
-        try {
-          const rec = await window.getRecordingById(r);
-          if (rec) recObjs.push({ id: r, name: rec.name, date: rec.date, blob: rec.blob, url: URL.createObjectURL(rec.blob), persisted: true });
-        } catch (err) {
-          console.warn('selectSession: getRecordingById falhou para id', r, err);
-        }
-      }
-    } else if (r && r.blob) {
-      const idGuess = r.id || (Date.now() + Math.floor(Math.random() * 1000));
-      recObjs.push({ id: idGuess, name: r.name, date: r.date, blob: r.blob, url: URL.createObjectURL(r.blob), persisted: false });
-    } else if (r && r.id) {
-      if (typeof window.getRecordingById === 'function') {
-        try {
-          const rec = await window.getRecordingById(r.id);
-          if (rec) recObjs.push({ id: r.id, name: rec.name, date: rec.date, blob: rec.blob, url: URL.createObjectURL(rec.blob), persisted: true });
-        } catch (err) {
-          console.warn('selectSession: getRecordingById falhou para objeto id', r.id, err);
-        }
-      }
-    }
-  }
-
-  currentSessionRecordings = recObjs.slice();
-  recordings = currentSessionRecordings.map(r => ({ id: r.id, name: r.name, date: r.date, blob: r.blob, url: r.url, persisted: !!r.persisted }));
-  currentIdx = recordings.length > 0 ? 0 : -1;
-  if (currentIdx >= 0) {
-    audioPlayer.src = recordings[0].url;
-    audioPlayer.load();
-  }
-  await loadSessions().catch(err => console.warn('loadSessions erro em selectSession:', err));
-  renderRecordingsList(recordings);
 }
 
 // ------------------------------
@@ -573,7 +484,7 @@ function encodeWAV(samples, sampleRate) {
   return new Blob([buffer], { type: 'audio/wav' });
 }
 
-// processAndPlayBlob wrapper: delega para audio.js via window when available
+// processAndPlayBlob wrapper: delega para audio.js via window quando disponível
 async function processAndPlayBlobDelegator(blob) {
   if (typeof window.processAndPlayBlob === 'function') {
     try {
@@ -608,6 +519,9 @@ async function processAndPlayBlobDelegator(blob) {
 // ------------------------------
 function showProcessing(show, percent = 0) {
   if (!processingIndicator || !processingProgress) return;
+  const cfg = _getCfg();
+  const showIndicator = (cfg.ui && cfg.ui.showProcessingIndicator !== undefined) ? cfg.ui.showProcessingIndicator : true;
+  if (!showIndicator) return;
   if (show) {
     processingIndicator.style.display = 'flex';
     processingProgress.textContent = `Processando: ${percent}%`;
@@ -619,6 +533,7 @@ function showProcessing(show, percent = 0) {
 
 function drawSpectrogramPixels(srcWidth, srcHeight, pixels) {
   if (!spectrogramCanvas) return;
+  const cfg = _getCfg();
   const dpr = window.devicePixelRatio || 1;
   const container = spectrogramCanvas.parentElement || document.body;
   const containerStyleWidth = container.clientWidth || 940;
@@ -637,7 +552,10 @@ function drawSpectrogramPixels(srcWidth, srcHeight, pixels) {
   spectrogramCanvas.style.height = visualHeight + 'px';
   const ctx = spectrogramCanvas.getContext('2d');
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-  ctx.imageSmoothingEnabled = false;
+
+  // usar config para image smoothing (você preferiu false)
+  const smoothing = (cfg.ui && cfg.ui.imageSmoothingEnabled !== undefined) ? cfg.ui.imageSmoothingEnabled : ((cfg.waveform && cfg.waveform.imageSmoothing) || false);
+  ctx.imageSmoothingEnabled = !!smoothing;
   ctx.imageSmoothingQuality = 'high';
   ctx.clearRect(0, 0, visualWidth, visualHeight);
   ctx.drawImage(off, 0, 0, srcWidth, srcHeight, 0, 0, visualWidth, visualHeight);
@@ -669,43 +587,7 @@ function selectRecordingInUI(idx, rec) {
 }
 
 // ------------------------------
-// Save session handler (mantido)
-// ------------------------------
-/*
-saveSessionBtn && saveSessionBtn.addEventListener('click', async () => {
-  if (!recordings || recordings.length === 0) {
-    alert('Nenhuma gravação para salvar nesta sessão.');
-    return;
-  }
-  const name = prompt('Nome da sessão:', `Sessão ${new Date().toLocaleString()}`);
-  if (!name) return;
-  const recRefs = recordings.map((r, idx) => {
-    if (r && typeof r.id === 'number') return r.id;
-    return { id: r.id, name: r.name || `Gravação ${idx+1}`, date: r.date || new Date().toISOString(), blob: r.blob };
-  });
-  const session = { name, date: Date.now(), recordings: recRefs };
-  try {
-    if (typeof window.saveSessionToDb === 'function') {
-      await window.saveSessionToDb(session);
-    } else {
-      await saveSessionToDb(session);
-    }
-    await loadSessions().catch(err => console.warn('loadSessions erro após salvar sessão:', err));
-    alert('Sessão salva.');
-  } catch (err) {
-    console.error('Erro ao salvar sessão:', err);
-    alert('Erro ao salvar sessão: ' + (err && err.message ? err.message : err));
-  }
-});
-*/
-// Export/import handlers kept (they reference DB API functions)
-// (kept as in prior file) ...
-// For brevity I assume the rest of your handlers (exportSessionById, import handlers) remain unchanged and present in this file.
-// If you need the full explicit rest of file, I can paste it as well.
-
-
-// ------------------------------
-// Recording flow (start / stop)
+// Recording flow (start / stop) with debugging logs
 // ------------------------------
 recordBtn.addEventListener('click', async () => {
   audioChunks = [];
@@ -821,17 +703,82 @@ stopBtn.addEventListener('click', () => {
   }
 });
 
-// remaining functions: window.onSelectRecording, prev/next navigation, loadSessions, init worker registration...
-// Keep them as before in your working copy; ensure they are present after this code block.
+// ------------------------------
+// Interface com histórico (quando selecionar gravação fora de sessões)
+// ------------------------------
+window.onSelectRecording = function(idx) {
+  if (idx < 0 || idx >= recordings.length) return;
+  currentIdx = idx;
+  const rec = recordings[idx];
+  if (rec && rec.url) {
+    audioPlayer.src = rec.url;
+    audioPlayer.style.display = 'block';
+    audioPlayer.load();
+  } else if (rec && rec.blob) {
+    rec.url = URL.createObjectURL(rec.blob);
+    audioPlayer.src = rec.url;
+    audioPlayer.load();
+  }
+  statusText.textContent = `Selecionado: ${new Date(rec.date).toLocaleString()}`;
+  if (rec && rec.blob) {
+    showWaveform(rec.blob).catch(()=>{});
+    processAndPlayBlobDelegator(rec.blob).catch(()=>{});
+  } else if (rec && rec.url) {
+    showWaveform(rec.url).catch(()=>{});
+    try {
+      fetch(rec.url).then(r => r.blob()).then(b => processAndPlayBlobDelegator(b)).catch(()=>{});
+    } catch (e) { /* ignore */ }
+  }
+  if (typeof window.renderHistory === 'function') window.renderHistory(recordings, currentIdx);
+};
 
-// Adicionar este trecho no final do recorder.js (ou logo após definição de drawSpectrogramPixels/showProcessing)
-// Garante que o worker do audio.js entregue mensagens para desenhar o espectrograma.
-(function attachWorkerHandler(){
+// navigation
+prevBtn.addEventListener('click', () => {
+  if (recordings.length === 0) return;
+  const next = currentIdx <= 0 ? 0 : currentIdx - 1;
+  window.onSelectRecording(next);
+});
+nextBtn.addEventListener('click', () => {
+  if (recordings.length === 0) return;
+  const next = currentIdx >= recordings.length - 1 ? recordings.length - 1 : (currentIdx === -1 ? recordings.length - 1 : currentIdx + 1);
+  window.onSelectRecording(next);
+});
+
+// ------------------------------
+// loadSessions (uses window.getAllSessionsFromDb if available)
+// ------------------------------
+async function loadSessions() {
+  if (typeof window.loadSessions === 'function') {
+    return window.loadSessions();
+  }
   try {
+    if (typeof window.getAllSessionsFromDb === 'function') {
+      sessionsCache = await window.getAllSessionsFromDb();
+    } else {
+      sessionsCache = [];
+    }
+    renderSessionsList();
+  } catch (err) {
+    console.warn('loadSessions: erro ao carregar sessões:', err);
+    sessionsCache = [];
+    renderSessionsList();
+  }
+}
+
+// ------------------------------
+// Init: register worker.onmessage handler (if available) and load sessions (non-blocking)
+// ------------------------------
+(function init() {
+  try {
+    // open DB non-blocking
+    if (typeof window.openDb === 'function') {
+      window.openDb().catch(err => console.warn('openDb falhou no init (não bloqueante):', err));
+    }
+    // register worker.onmessage if audio.js exposes ensureWorker
     if (typeof window.ensureWorker === 'function') {
       window.ensureWorker().then(worker => {
         if (!worker) return;
-        // Evitar múltiplos registradores
+        // evitar múltiplos registros
         if (worker.__registeredForRecorder) return;
         worker.__registeredForRecorder = true;
         worker.onmessage = (ev) => {
@@ -839,12 +786,18 @@ stopBtn.addEventListener('click', () => {
           if (!msg) return;
           if (msg.type === 'progress') {
             const p = Math.round((msg.value || 0) * 100);
-            try { showProcessing(true, p); } catch(e){ console.warn('showProcessing missing', e); }
+            showProcessing(true, p);
           } else if (msg.type === 'done') {
             try {
               const pixels = new Uint8ClampedArray(msg.pixels);
               drawSpectrogramPixels(msg.width, msg.height, pixels);
               showProcessing(false, 100);
+              // telemetria: mostrar timings se disponíveis
+              if (msg.timings && window.appConfig && window.appConfig.telemetry && window.appConfig.telemetry.enabled) {
+                if (window.appConfig.telemetry.sendToConsole) {
+                  console.log('[spectrogram.metrics]', msg.timings);
+                }
+              }
             } catch (err) {
               console.warn('Erro ao processar mensagem do worker:', err);
             }
@@ -854,27 +807,12 @@ stopBtn.addEventListener('click', () => {
           }
         };
       }).catch(err => {
-        console.warn('ensureWorker falhou ao registrar worker handler:', err);
+        console.warn('ensureWorker falhou no init:', err);
       });
-    } else {
-      console.debug('attachWorkerHandler: window.ensureWorker não disponível ainda.');
     }
+    // call loadSessions but don't await (prevents blocking)
+    loadSessions().catch(err => console.warn('loadSessions no init falhou (não bloqueante):', err));
   } catch (err) {
-    console.warn('attachWorkerHandler exception:', err);
+    console.warn('Erro ao inicializar recorder (não fatal):', err);
   }
 })();
-
-
-// Expor API mínima do workspace para sessions.js
-window.getWorkspaceRecordings = function() {
-  return recordings;
-};
-window.setWorkspaceRecordings = function(arr) {
-  // substituir o array (mantendo compatibilidade)
-  recordings = Array.isArray(arr) ? arr : [];
-  try { renderRecordingsList(recordings); } catch(e){ /* ignore */ }
-};
-window.appendWorkspaceRecording = function(rec) {
-  recordings.push(rec);
-  try { renderRecordingsList(recordings); } catch(e){ /* ignore */ }
-};
