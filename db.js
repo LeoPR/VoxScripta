@@ -2,6 +2,8 @@
 // IndexedDB helpers: stores 'recordings' (pool) e 'sessions' (apontando por ids).
 // Versão DB = 2 (v2). Inclui rotina de migração em runtime para sessões que
 // ainda tenham gravações embutidas (schema antigo).
+// Correção: migrateEmbeddedRecordings agora recebe a instância db em vez de chamar openDb()
+// para evitar espera circular / deadlock durante openDb().
 
 const DB_NAME = 'vox_db';
 const DB_VERSION = 2;
@@ -30,8 +32,8 @@ function openDb() {
     };
     req.onsuccess = (ev) => {
       _dbInstance = ev.target.result;
-      // realizar migração em runtime (se necessário)
-      migrateEmbeddedRecordings().then(() => resolve(_dbInstance)).catch((err) => {
+      // realizar migração em runtime (se necessário) usando a instância já aberta
+      migrateEmbeddedRecordings(_dbInstance).then(() => resolve(_dbInstance)).catch((err) => {
         console.warn('Migration warning:', err);
         resolve(_dbInstance);
       });
@@ -44,9 +46,9 @@ function openDb() {
 // Migrações em runtime:
 // Procura sessões que ainda contenham objetos de gravação com blob embutido
 // (estrutura antiga), salva blobs no store 'recordings' e substitui por IDs.
-async function migrateEmbeddedRecordings() {
-  const db = await openDb(); // garante instancia
-  // abrir txn readonly -> readwrite para atualizar sessões e inserir gravações
+// Agora recebe a instância db para evitar chamar openDb() novamente.
+async function migrateEmbeddedRecordings(db) {
+  if (!db) return true;
   return new Promise((resolve, reject) => {
     try {
       const tx = db.transaction([STORE_SESSIONS, STORE_RECORDINGS], 'readwrite');
@@ -57,7 +59,12 @@ async function migrateEmbeddedRecordings() {
       cursorReq.onsuccess = async (e) => {
         const cursor = e.target.result;
         if (!cursor) {
-          resolve(true);
+          // wait for transaction complete before resolving to ensure writes are finished
+          tx.oncomplete = () => resolve(true);
+          tx.onerror = (ev) => {
+            console.warn('Transaction erro during migration:', ev);
+            resolve(true); // best-effort
+          };
           return;
         }
         const sess = cursor.value;
@@ -65,17 +72,22 @@ async function migrateEmbeddedRecordings() {
           // detectar gravações embutidas (obj com blob)
           let needsUpdate = false;
           const newRefs = [];
+          // We will collect add requests and wait for them before updating the session.
+          const pendingAdds = [];
           for (const r of sess.recordings) {
             if (r && r.blob) {
               // salvar blob no recStore e coletar id (assíncrono)
               try {
                 const addReq = recStore.add({ name: r.name || '', date: r.date || Date.now(), blob: r.blob });
-                // como addReq.onsuccess será chamado depois no mesmo txn, usamos um promise wrapper
-                const rid = await requestToPromise(addReq);
-                newRefs.push(rid);
+                const p = requestToPromise(addReq).then((rid) => {
+                  newRefs.push(rid);
+                }).catch(err => {
+                  console.warn('Erro salvando gravação durante migração (add):', err);
+                });
+                pendingAdds.push(p);
                 needsUpdate = true;
               } catch (err) {
-                console.warn('Erro salvando gravação durante migração:', err);
+                console.warn('Erro salvando gravação durante migração (sync):', err);
               }
             } else if (r && (typeof r === 'number' || typeof r === 'string')) {
               newRefs.push(r);
@@ -83,17 +95,25 @@ async function migrateEmbeddedRecordings() {
               newRefs.push(r.id);
             }
           }
-          if (needsUpdate) {
-            sess.recordings = newRefs;
-            const updReq = cursor.update(sess);
-            await requestToPromise(updReq);
+          // Wait for all adds to resolve, then update the session record
+          try {
+            await Promise.all(pendingAdds);
+            if (needsUpdate) {
+              sess.recordings = newRefs;
+              const updReq = cursor.update(sess);
+              await requestToPromise(updReq);
+            }
+          } catch (err) {
+            console.warn('Erro ao aguardar adds durante migração:', err);
+            // continue anyway
           }
         }
         cursor.continue();
       };
       cursorReq.onerror = (ev) => {
         console.warn('Cursor migration erro:', ev);
-        resolve(true); // best-effort
+        // resolve as a best-effort — don't block openDb
+        resolve(true);
       };
     } catch (err) {
       console.warn('Migration exception:', err);
@@ -115,41 +135,57 @@ async function saveRecordingToDbObj(obj) {
   // obj: { name, date, blob }
   const db = await openDb();
   return new Promise((resolve, reject) => {
-    const tx = db.transaction([STORE_RECORDINGS], 'readwrite');
-    const store = tx.objectStore(STORE_RECORDINGS);
-    const req = store.add(obj);
-    req.onsuccess = () => resolve(req.result);
-    req.onerror = () => reject(req.error);
+    try {
+      const tx = db.transaction([STORE_RECORDINGS], 'readwrite');
+      const store = tx.objectStore(STORE_RECORDINGS);
+      const req = store.add(obj);
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => reject(req.error);
+    } catch (err) {
+      reject(err);
+    }
   });
 }
 async function getRecordingById(id) {
   const db = await openDb();
   return new Promise((resolve, reject) => {
-    const tx = db.transaction([STORE_RECORDINGS], 'readonly');
-    const store = tx.objectStore(STORE_RECORDINGS);
-    const req = store.get(Number(id));
-    req.onsuccess = () => resolve(req.result);
-    req.onerror = () => reject(req.error);
+    try {
+      const tx = db.transaction([STORE_RECORDINGS], 'readonly');
+      const store = tx.objectStore(STORE_RECORDINGS);
+      const req = store.get(Number(id));
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => reject(req.error);
+    } catch (err) {
+      reject(err);
+    }
   });
 }
 async function deleteRecordingById(id) {
   const db = await openDb();
   return new Promise((resolve, reject) => {
-    const tx = db.transaction([STORE_RECORDINGS], 'readwrite');
-    const store = tx.objectStore(STORE_RECORDINGS);
-    const req = store.delete(Number(id));
-    req.onsuccess = () => resolve(true);
-    req.onerror = () => reject(req.error);
+    try {
+      const tx = db.transaction([STORE_RECORDINGS], 'readwrite');
+      const store = tx.objectStore(STORE_RECORDINGS);
+      const req = store.delete(Number(id));
+      req.onsuccess = () => resolve(true);
+      req.onerror = () => reject(req.error);
+    } catch (err) {
+      reject(err);
+    }
   });
 }
 async function getAllRecordingsFromDb() {
   const db = await openDb();
   return new Promise((resolve, reject) => {
-    const tx = db.transaction([STORE_RECORDINGS], 'readonly');
-    const store = tx.objectStore(STORE_RECORDINGS);
-    const req = store.getAll();
-    req.onsuccess = () => resolve(req.result);
-    req.onerror = () => reject(req.error);
+    try {
+      const tx = db.transaction([STORE_RECORDINGS], 'readonly');
+      const store = tx.objectStore(STORE_RECORDINGS);
+      const req = store.getAll();
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => reject(req.error);
+    } catch (err) {
+      reject(err);
+    }
   });
 }
 
@@ -157,51 +193,71 @@ async function getAllRecordingsFromDb() {
 async function saveSessionToDb(session) {
   const db = await openDb();
   return new Promise((resolve, reject) => {
-    const tx = db.transaction([STORE_SESSIONS], 'readwrite');
-    const store = tx.objectStore(STORE_SESSIONS);
-    const req = store.add(session);
-    req.onsuccess = () => resolve(req.result);
-    req.onerror = () => reject(req.error);
+    try {
+      const tx = db.transaction([STORE_SESSIONS], 'readwrite');
+      const store = tx.objectStore(STORE_SESSIONS);
+      const req = store.add(session);
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => reject(req.error);
+    } catch (err) {
+      reject(err);
+    }
   });
 }
 async function updateSessionInDb(session) {
   const db = await openDb();
   return new Promise((resolve, reject) => {
-    const tx = db.transaction([STORE_SESSIONS], 'readwrite');
-    const store = tx.objectStore(STORE_SESSIONS);
-    const req = store.put(session);
-    req.onsuccess = () => resolve(true);
-    req.onerror = () => reject(req.error);
+    try {
+      const tx = db.transaction([STORE_SESSIONS], 'readwrite');
+      const store = tx.objectStore(STORE_SESSIONS);
+      const req = store.put(session);
+      req.onsuccess = () => resolve(true);
+      req.onerror = () => reject(req.error);
+    } catch (err) {
+      reject(err);
+    }
   });
 }
 async function getAllSessionsFromDb() {
   const db = await openDb();
   return new Promise((resolve, reject) => {
-    const tx = db.transaction([STORE_SESSIONS], 'readonly');
-    const store = tx.objectStore(STORE_SESSIONS);
-    const req = store.getAll();
-    req.onsuccess = () => resolve(req.result);
-    req.onerror = () => reject(req.error);
+    try {
+      const tx = db.transaction([STORE_SESSIONS], 'readonly');
+      const store = tx.objectStore(STORE_SESSIONS);
+      const req = store.getAll();
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => reject(req.error);
+    } catch (err) {
+      reject(err);
+    }
   });
 }
 async function getSessionById(id) {
   const db = await openDb();
   return new Promise((resolve, reject) => {
-    const tx = db.transaction([STORE_SESSIONS], 'readonly');
-    const store = tx.objectStore(STORE_SESSIONS);
-    const req = store.get(Number(id));
-    req.onsuccess = () => resolve(req.result);
-    req.onerror = () => reject(req.error);
+    try {
+      const tx = db.transaction([STORE_SESSIONS], 'readonly');
+      const store = tx.objectStore(STORE_SESSIONS);
+      const req = store.get(Number(id));
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => reject(req.error);
+    } catch (err) {
+      reject(err);
+    }
   });
 }
 async function deleteSessionFromDb(id) {
   const db = await openDb();
   return new Promise((resolve, reject) => {
-    const tx = db.transaction([STORE_SESSIONS], 'readwrite');
-    const store = tx.objectStore(STORE_SESSIONS);
-    const req = store.delete(Number(id));
-    req.onsuccess = () => resolve(true);
-    req.onerror = () => reject(req.error);
+    try {
+      const tx = db.transaction([STORE_SESSIONS], 'readwrite');
+      const store = tx.objectStore(STORE_SESSIONS);
+      const req = store.delete(Number(id));
+      req.onsuccess = () => resolve(true);
+      req.onerror = () => reject(req.error);
+    } catch (err) {
+      reject(err);
+    }
   });
 }
 
