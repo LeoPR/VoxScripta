@@ -26,6 +26,9 @@ const importRecordingInput = document.getElementById('import-recording-input');
 
 let audioCtx, analyser, sourceNode, animationId, liveStream;
 
+// sessions cache explícito (evita variáveis implícitas)
+let sessionsCache = [];
+
 // util para obter config mesclada
 function _getCfg() {
   if (window.appConfig && typeof window.appConfig.getMergedProcessingOptions === 'function') {
@@ -137,12 +140,28 @@ async function persistRecording(blob, suggestedName) {
 }
 
 // ------------------------------
-// Render sessions list (delegado para sessions.js - função aqui apenas para compatibilidade)
+// Render sessions list (delegado para sessions.js - stub de compatibilidade)
 // ------------------------------
 function renderSessionsList() {
-  // sessions.js faz o render real; mantemos stub para compatibilidade
   if (typeof window.renderSessionsList === 'function') {
     window.renderSessionsList();
+  } else {
+    const container = document.getElementById('sessions-list');
+    if (!container) return;
+    container.innerHTML = '';
+    sessionsCache.sort((a,b) => b.date - a.date);
+    sessionsCache.forEach(s => {
+      const item = document.createElement('div');
+      item.className = 'session-item';
+      const title = document.createElement('div');
+      title.textContent = s.name || `Sessão ${new Date(s.date).toLocaleString()}`;
+      item.appendChild(title);
+      item.onclick = () => selectSession(s.id);
+      container.appendChild(item);
+    });
+    if (sessionsCache.length === 0) {
+      container.innerHTML = '<div style="color:#666;font-size:13px;">Nenhuma sessão salva</div>';
+    }
   }
 }
 
@@ -745,12 +764,9 @@ nextBtn.addEventListener('click', () => {
 });
 
 // ------------------------------
-// loadSessions (uses window.getAllSessionsFromDb if available)
+// Fallback local para carregar sessões (evita colisão com sessions.js)
 // ------------------------------
-async function loadSessions() {
-  if (typeof window.loadSessions === 'function') {
-    return window.loadSessions();
-  }
+async function loadSessionsSafe() {
   try {
     if (typeof window.getAllSessionsFromDb === 'function') {
       sessionsCache = await window.getAllSessionsFromDb();
@@ -759,7 +775,7 @@ async function loadSessions() {
     }
     renderSessionsList();
   } catch (err) {
-    console.warn('loadSessions: erro ao carregar sessões:', err);
+    console.warn('loadSessionsSafe: erro ao carregar sessões:', err);
     sessionsCache = [];
     renderSessionsList();
   }
@@ -810,8 +826,12 @@ async function loadSessions() {
         console.warn('ensureWorker falhou no init:', err);
       });
     }
-    // call loadSessions but don't await (prevents blocking)
-    loadSessions().catch(err => console.warn('loadSessions no init falhou (não bloqueante):', err));
+    // Carregar sessões: preferir a função de sessions.js; se não houver, usar fallback local.
+    if (typeof window.loadSessions === 'function') {
+      window.loadSessions().catch(err => console.warn('loadSessions (sessions.js) no init falhou (não bloqueante):', err));
+    } else {
+      loadSessionsSafe().catch(err => console.warn('loadSessionsSafe no init falhou (não bloqueante):', err));
+    }
   } catch (err) {
     console.warn('Erro ao inicializar recorder (não fatal):', err);
   }
