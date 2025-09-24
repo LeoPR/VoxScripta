@@ -637,7 +637,7 @@ function drawSpectrogramPixels(srcWidth, srcHeight, pixels) {
   spectrogramCanvas.style.height = visualHeight + 'px';
   const ctx = spectrogramCanvas.getContext('2d');
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingEnabled = false;
   ctx.imageSmoothingQuality = 'high';
   ctx.clearRect(0, 0, visualWidth, visualHeight);
   ctx.drawImage(off, 0, 0, srcWidth, srcHeight, 0, 0, visualWidth, visualHeight);
