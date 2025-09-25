@@ -7,6 +7,18 @@
 // Expor selectedSessionId globalmente (compatibilidade)
 window.selectedSessionId = null;
 
+// util: formata data no estilo 24h (DD/MM/YYYY HH:mm:ss)
+function formatDate24(dateLike) {
+  try {
+    const d = (dateLike instanceof Date) ? dateLike : new Date(dateLike);
+    if (isNaN(d.getTime())) return String(dateLike || '');
+    const pad = (n) => String(n).padStart(2, '0');
+    return `${pad(d.getDate())}/${pad(d.getMonth()+1)}/${d.getFullYear()} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+  } catch (e) {
+    return String(dateLike || '');
+  }
+}
+
 async function loadSessions() {
   try {
     if (typeof window.getAllSessionsFromDb === 'function') {
@@ -34,8 +46,11 @@ function renderSessionsList() {
   sessionsCache.forEach(s => {
     const item = document.createElement('div');
     item.className = 'session-item' + (s.id === window.selectedSessionId ? ' selected' : '');
+    // title para hover-preview (nome + data 24h)
+    item.title = `${s.name || ''}\n${formatDate24(s.date)}`;
+
     const title = document.createElement('div');
-    title.textContent = s.name || `Sessão ${new Date(s.date).toLocaleString()}`;
+    title.textContent = s.name || `Sessão ${formatDate24(s.date)}`;
     item.appendChild(title);
     const right = document.createElement('div');
     right.style.display = 'flex';
@@ -158,7 +173,7 @@ async function onSaveSessionClicked() {
       alert('Nenhuma gravação para salvar nesta sessão.');
       return;
     }
-    const name = prompt('Nome da sessão:', `Sessão ${new Date().toLocaleString()}`);
+    const name = prompt('Nome da sessão:', `Sessão ${formatDate24(Date.now())}`);
     if (!name) return;
     const recRefs = workspace.map((r, idx) => {
       if (r && typeof r.id === 'number') return r.id;

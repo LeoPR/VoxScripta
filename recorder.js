@@ -37,6 +37,18 @@ function _getCfg() {
   return window.processingOptions || {};
 }
 
+// util: formata data no estilo 24h (DD/MM/YYYY HH:mm:ss)
+function formatDate24(dateLike) {
+  try {
+    const d = (dateLike instanceof Date) ? dateLike : new Date(dateLike);
+    if (isNaN(d.getTime())) return String(dateLike || '');
+    const pad = (n) => String(n).padStart(2, '0');
+    return `${pad(d.getDate())}/${pad(d.getMonth()+1)}/${d.getFullYear()} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+  } catch (e) {
+    return String(dateLike || '');
+  }
+}
+
 // ------------------------------
 // Helpers local (base64/blobs)
 // ------------------------------
@@ -154,7 +166,7 @@ function renderSessionsList() {
       const item = document.createElement('div');
       item.className = 'session-item';
       const title = document.createElement('div');
-      title.textContent = s.name || `Sessão ${new Date(s.date).toLocaleString()}`;
+      title.textContent = s.name || `Sessão ${formatDate24(s.date)}`;
       item.appendChild(title);
       item.onclick = () => selectSession(s.id);
       container.appendChild(item);
@@ -175,6 +187,9 @@ function renderRecordingsList(list) {
   arr.forEach((rec, idx) => {
     const item = document.createElement('div');
     item.className = 'recording-item' + (idx === currentIdx ? ' selected' : '');
+    // title para hover-preview com data 24h
+    item.title = `${rec.name || ''}\n${formatDate24(rec.date)}`;
+
     const nameWrap = document.createElement('div');
     nameWrap.style.display = 'flex';
     nameWrap.style.alignItems = 'center';
@@ -206,7 +221,7 @@ function renderRecordingsList(list) {
 
     const meta = document.createElement('div');
     meta.className = 'recording-meta';
-    meta.textContent = new Date(rec.date).toLocaleString();
+    meta.textContent = formatDate24(rec.date);
     item.appendChild(meta);
 
     const play = document.createElement('button');
@@ -321,6 +336,30 @@ function renderRecordingsList(list) {
   });
   if (arr.length === 0) {
     container.innerHTML = '<div style="color:#666;font-size:13px;">Nenhuma gravação nesta sessão / workspace</div>';
+  }
+}
+
+// ------------------------------
+// selectRecordingInUI (restaurada) — seleciona, atualiza UI e dispara processamento/reprodução
+// ------------------------------
+function selectRecordingInUI(idx, rec) {
+  currentIdx = idx;
+  if (animationId) { cancelAnimationFrame(animationId); animationId = null; }
+  if (rec && rec.url) {
+    audioPlayer.src = rec.url;
+    audioPlayer.load();
+  } else if (rec && rec.blob) {
+    rec.url = URL.createObjectURL(rec.blob);
+    audioPlayer.src = rec.url;
+    audioPlayer.load();
+  }
+  renderRecordingsList(recordings);
+  if (rec && rec.blob) {
+    showWaveform(rec.blob).catch(()=>{});
+    processAndPlayBlobDelegator(rec.blob).catch(()=>{});
+  } else if (rec && rec.url) {
+    showWaveform(rec.url).catch(()=>{});
+    fetch(rec.url).then(r => r.blob()).then(b => processAndPlayBlobDelegator(b)).catch(()=>{});
   }
 }
 
@@ -582,147 +621,6 @@ function drawSpectrogramPixels(srcWidth, srcHeight, pixels) {
 }
 
 // ------------------------------
-// selectRecordingInUI
-// ------------------------------
-function selectRecordingInUI(idx, rec) {
-  currentIdx = idx;
-  if (animationId) { cancelAnimationFrame(animationId); animationId = null; }
-  if (rec && rec.url) {
-    audioPlayer.src = rec.url;
-    audioPlayer.load();
-  } else if (rec && rec.blob) {
-    rec.url = URL.createObjectURL(rec.blob);
-    audioPlayer.src = rec.url;
-    audioPlayer.load();
-  }
-  renderRecordingsList(recordings);
-  if (rec && rec.blob) {
-    showWaveform(rec.blob).catch(()=>{});
-    processAndPlayBlobDelegator(rec.blob).catch(()=>{});
-  } else if (rec && rec.url) {
-    showWaveform(rec.url).catch(()=>{});
-    fetch(rec.url).then(r => r.blob()).then(b => processAndPlayBlobDelegator(b)).catch(()=>{});
-  }
-}
-
-// ------------------------------
-// Recording flow (start / stop) with debugging logs
-// ------------------------------
-recordBtn.addEventListener('click', async () => {
-  audioChunks = [];
-
-  statusText.textContent = "Aguardando permissão...";
-  recordBtn.disabled = true;
-  stopBtn.disabled = false;
-  recordBtn.classList.add('pending');
-  recordBtn.classList.remove('active');
-
-  try {
-    liveStream = await navigator.mediaDevices.getUserMedia({ audio: true });
-  } catch (err) {
-    statusText.textContent = "Permissão de microfone negada.";
-    recordBtn.disabled = false;
-    stopBtn.disabled = true;
-    recordBtn.classList.remove('pending');
-    console.error(err);
-    return;
-  }
-
-  audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-  try { await audioCtx.resume(); } catch (e) { /* ignore */ }
-
-  sourceNode = audioCtx.createMediaStreamSource(liveStream);
-  analyser = audioCtx.createAnalyser();
-  analyser.fftSize = 512;
-  analyser.smoothingTimeConstant = 0.3;
-  sourceNode.connect(analyser);
-
-  waveform.style.display = 'block';
-  spectrogramCanvas.style.display = 'block';
-  drawLiveWaveform();
-
-  mediaRecorder = new MediaRecorder(liveStream);
-  audioChunks = [];
-  mediaRecorder.ondataavailable = e => { audioChunks.push(e.data); };
-
-  mediaRecorder.onstart = () => {
-    recordBtn.classList.remove('pending');
-    recordBtn.classList.add('active');
-    statusText.textContent = "Gravando...";
-    recordBtn.disabled = false;
-  };
-
-  mediaRecorder.onstop = async () => {
-    try {
-      const blob = new Blob(audioChunks, { type: 'audio/webm' });
-      const suggestedName = `Gravação ${recordings.length + 1}`;
-      persistRecording(blob, suggestedName).catch(err => console.warn('persistRecording erro:', err));
-    } catch (err) {
-      console.error('Erro em onstop processing:', err);
-      statusText.textContent = "Erro ao finalizar gravação.";
-    } finally {
-      recordBtn.disabled = false;
-      stopBtn.disabled = true;
-      recordBtn.classList.remove('active');
-      if (audioCtx) { audioCtx.close().catch(()=>{}); audioCtx = null; }
-      if (liveStream) { try { liveStream.getTracks().forEach(t => t.stop()); } catch(e){} liveStream = null; }
-      if (animationId) { cancelAnimationFrame(animationId); animationId = null; }
-    }
-  };
-
-  mediaRecorder.onerror = (ev) => {
-    console.error('mediaRecorder.onerror', ev);
-    statusText.textContent = 'Erro na gravação';
-  };
-
-  try {
-    mediaRecorder.start();
-  } catch (err) {
-    console.error('Erro ao iniciar MediaRecorder:', err);
-    recordBtn.classList.remove('pending');
-    recordBtn.disabled = false;
-    stopBtn.disabled = true;
-    statusText.textContent = "Erro ao iniciar gravação.";
-  }
-});
-
-// stop handler
-stopBtn.addEventListener('click', () => {
-  if (mediaRecorder && mediaRecorder.state !== 'inactive') {
-    try {
-      if (typeof mediaRecorder.requestData === 'function') {
-        try { mediaRecorder.requestData(); } catch (e) { console.debug('requestData falhou:', e); }
-      }
-      mediaRecorder.stop();
-      statusText.textContent = "Parando...";
-    } catch (err) {
-      console.error('Erro ao chamar stop():', err);
-      try {
-        const blob = new Blob(audioChunks, { type: 'audio/webm' });
-        (async () => {
-          try {
-            await persistRecording(blob, `Gravação ${recordings.length+1}`);
-            statusText.textContent = "Gravação salva (tempo local).";
-          } catch (e) {
-            console.error('Fallback finalize falhou:', e);
-            statusText.textContent = "Erro ao finalizar gravação.";
-          } finally {
-            recordBtn.disabled = false;
-            stopBtn.disabled = true;
-            recordBtn.classList.remove('active');
-            if (audioCtx) { audioCtx.close().catch(()=>{}); audioCtx = null; }
-            if (liveStream) { try { liveStream.getTracks().forEach(t => t.stop()); } catch(e){} liveStream = null; }
-            if (animationId) { cancelAnimationFrame(animationId); animationId = null; }
-          }
-        })();
-      } catch (e) {
-        console.error('Erro no fallback stop:', e);
-      }
-    }
-  }
-});
-
-// ------------------------------
 // Interface com histórico (quando selecionar gravação fora de sessões)
 // ------------------------------
 window.onSelectRecording = function(idx) {
@@ -738,7 +636,7 @@ window.onSelectRecording = function(idx) {
     audioPlayer.src = rec.url;
     audioPlayer.load();
   }
-  statusText.textContent = `Selecionado: ${new Date(rec.date).toLocaleString()}`;
+  statusText.textContent = `Selecionado: ${formatDate24(rec.date)}`;
   if (rec && rec.blob) {
     showWaveform(rec.blob).catch(()=>{});
     processAndPlayBlobDelegator(rec.blob).catch(()=>{});
