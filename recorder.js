@@ -131,8 +131,7 @@ async function persistRecording(blob, suggestedName) {
       if (savedId !== undefined && savedId !== null) {
         for (let i = 0; i < recordings.length; i++) {
           if (recordings[i] && recordings[i].id === tempId) {
-            recordings[i].id = savedId;
-            recordings[i].persisted = true;
+            recordings[i] = { ...recordings[i], id: savedId, persisted: true };
             console.debug('persistRecording: gravação persistida com id=', savedId);
             break;
           }
@@ -303,10 +302,11 @@ function renderRecordingsList(list) {
     del.onclick = (ev) => {
       ev.stopPropagation();
       if (!confirm('Apagar gravação?')) return;
-      if (selectedSessionId && typeof window.getSessionById === 'function') {
+      // usar window.selectedSessionId (evita ReferenceError)
+      if (window.selectedSessionId && typeof window.getSessionById === 'function') {
         (async () => {
           try {
-            const sess = await window.getSessionById(selectedSessionId);
+            const sess = await window.getSessionById(window.selectedSessionId);
             if (!sess) return;
             sess.recordings = (sess.recordings || []).filter(r => {
               if (typeof r === 'number' || typeof r === 'string') return r !== rec.id;
@@ -660,6 +660,93 @@ nextBtn.addEventListener('click', () => {
   const next = currentIdx >= recordings.length - 1 ? recordings.length - 1 : (currentIdx === -1 ? recordings.length - 1 : currentIdx + 1);
   window.onSelectRecording(next);
 });
+
+// ------------------------------
+// Recording: handlers mínimos para Gravar/Parar
+// ------------------------------
+if (recordBtn && !recordBtn.__recorder_click_bound) {
+  recordBtn.addEventListener('click', async () => {
+    try {
+      statusText.textContent = 'Iniciando...';
+      recordBtn.disabled = true;
+      stopBtn.disabled = false;
+
+      // Solicita microfone
+      liveStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+
+      // Áudio ao vivo + preview waveform
+      audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      try { await audioCtx.resume(); } catch (_) {}
+      sourceNode = audioCtx.createMediaStreamSource(liveStream);
+      analyser = audioCtx.createAnalyser();
+      analyser.fftSize = 512;
+      analyser.smoothingTimeConstant = 0.3;
+      sourceNode.connect(analyser);
+      drawLiveWaveform();
+
+      // Gravação
+      mediaRecorder = new MediaRecorder(liveStream);
+      audioChunks = [];
+      mediaRecorder.ondataavailable = (e) => { if (e.data && e.data.size) audioChunks.push(e.data); };
+      mediaRecorder.onstart = () => {
+        statusText.textContent = 'Gravando...';
+        recordBtn.disabled = false;
+      };
+      mediaRecorder.onstop = async () => {
+        try {
+          const blob = new Blob(audioChunks, { type: 'audio/webm' });
+          const suggestedName = `Gravação ${recordings.length + 1}`;
+          await persistRecording(blob, suggestedName);
+        } catch (err) {
+          console.error('Erro ao finalizar gravação:', err);
+          statusText.textContent = 'Erro ao finalizar gravação.';
+        } finally {
+          // Limpeza
+          recordBtn.disabled = false;
+          stopBtn.disabled = true;
+          if (audioCtx) { audioCtx.close().catch(()=>{}); audioCtx = null; }
+          if (liveStream) {
+            try { liveStream.getTracks().forEach(t => t.stop()); } catch(_) {}
+            liveStream = null;
+          }
+          if (animationId) { cancelAnimationFrame(animationId); animationId = null; }
+        }
+      };
+      mediaRecorder.onerror = (ev) => {
+        console.error('mediaRecorder.onerror', ev);
+        statusText.textContent = 'Erro na gravação.';
+      };
+
+      mediaRecorder.start();
+    } catch (err) {
+      console.error('Erro ao iniciar gravação:', err);
+      statusText.textContent = 'Erro ao iniciar gravação.';
+      recordBtn.disabled = false;
+      stopBtn.disabled = true;
+      // limpeza defensiva
+      try { if (liveStream) { liveStream.getTracks().forEach(t => t.stop()); liveStream = null; } } catch(_){}
+      try { if (audioCtx) { audioCtx.close().catch(()=>{}); audioCtx = null; } } catch(_){}
+    }
+  });
+  recordBtn.__recorder_click_bound = true;
+}
+
+if (stopBtn && !stopBtn.__recorder_click_bound) {
+  stopBtn.addEventListener('click', () => {
+    if (!mediaRecorder) return;
+    try {
+      statusText.textContent = 'Parando...';
+      if (typeof mediaRecorder.requestData === 'function') {
+        try { mediaRecorder.requestData(); } catch(_) {}
+      }
+      if (mediaRecorder.state !== 'inactive') mediaRecorder.stop();
+    } catch (err) {
+      console.error('Erro ao chamar stop():', err);
+      statusText.textContent = 'Erro ao parar.';
+    }
+  });
+  stopBtn.__recorder_click_bound = true;
+}
 
 // ------------------------------
 // Fallback local para carregar sessões (evita colisão com sessions.js)
