@@ -662,6 +662,34 @@ nextBtn.addEventListener('click', () => {
 });
 
 // ------------------------------
+// NOVO: Importar gravação (arquivo de áudio) via #import-recording-input
+// ------------------------------
+if (importRecordingInput && !importRecordingInput.__rec_import_bound) {
+  importRecordingInput.addEventListener('change', async (ev) => {
+    const file = ev.target && ev.target.files && ev.target.files[0] ? ev.target.files[0] : null;
+    if (!file) return;
+    try {
+      statusText.textContent = 'Importando áudio...';
+      const baseName = file.name ? file.name.replace(/\.[^/.]+$/, '') : '';
+      const suggestedName = baseName || `Gravação ${recordings.length + 1}`;
+      const rec = await persistRecording(file, suggestedName);
+      // Selecionar e processar a gravação recém-importada
+      let idx = recordings.findIndex(r => r && r.id === rec.id);
+      if (idx < 0) idx = recordings.length - 1;
+      selectRecordingInUI(idx, recordings[idx] || rec);
+      statusText.textContent = 'Áudio importado.';
+    } catch (err) {
+      console.error('Erro ao importar gravação:', err);
+      alert('Erro ao importar gravação. Veja o console para detalhes.');
+      statusText.textContent = 'Erro ao importar.';
+    } finally {
+      try { importRecordingInput.value = ''; } catch(_) {}
+    }
+  });
+  importRecordingInput.__rec_import_bound = true;
+}
+
+// ------------------------------
 // Recording: handlers mínimos para Gravar/Parar
 // ------------------------------
 if (recordBtn && !recordBtn.__recorder_click_bound) {
