@@ -439,3 +439,12 @@ recording-item.expanded .item-controls,
 
 /* foco acessível */
 .session-item:focus, .recording-item:focus { outline: 2px solid rgba(123,63,228,0.12); outline-offset: 2px; }
+
+.session-item .meta,
+.session-item .session-meta {
+  display: block;
+  font-size: 12px;
+  color: #666;
+  margin-top: 4px;
+  white-space: normal;
+}

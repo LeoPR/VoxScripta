@@ -43,18 +43,40 @@ function renderSessionsList() {
   container.innerHTML = '';
   const sessionsCache = window._sessionsCache || [];
   sessionsCache.sort((a,b) => b.date - a.date);
-  sessionsCache.forEach(s => {
+  sessionsCache.forEach((s, index) => {
     const item = document.createElement('div');
     item.className = 'session-item' + (s.id === window.selectedSessionId ? ' selected' : '');
-    // title para hover-preview (nome + data 24h)
+    // tooltip com nome + data completa
     item.title = `${s.name || ''}\n${formatDate24(s.date)}`;
 
+    // Left area: título (uma linha truncada) + meta (data, sempre visível em duas linhas)
+    const left = document.createElement('div');
+    left.style.display = 'flex';
+    left.style.flexDirection = 'column';
+    left.style.flex = '1 1 auto';
+    left.style.minWidth = '0'; // importante para permitir truncamento no filho
+
     const title = document.createElement('div');
-    title.textContent = s.name || `Sessão ${formatDate24(s.date)}`;
-    item.appendChild(title);
+    title.className = 'session-title';
+    // fallback para nomes vazios: Sessão N
+    title.textContent = s.name || `Sessão ${index + 1}`;
+    title.style.overflow = 'hidden';
+    title.style.textOverflow = 'ellipsis';
+    title.style.whiteSpace = 'nowrap';
+    left.appendChild(title);
+
+    const meta = document.createElement('div');
+    meta.className = 'meta session-meta';
+    meta.textContent = formatDate24(s.date);
+    left.appendChild(meta);
+
+    item.appendChild(left);
+
+    // Right area: actions
     const right = document.createElement('div');
     right.style.display = 'flex';
     right.style.gap = '6px';
+    right.style.alignItems = 'center';
 
     const expBtn = document.createElement('button');
     expBtn.className = 'small';
@@ -87,7 +109,9 @@ function renderSessionsList() {
       await loadSessions().catch(err => console.warn('loadSessions erro após apagar:', err));
     };
     right.appendChild(del);
+
     item.appendChild(right);
+
     item.onclick = () => selectSession(s.id);
     container.appendChild(item);
   });
