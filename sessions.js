@@ -173,8 +173,18 @@ async function onSaveSessionClicked() {
       alert('Nenhuma gravação para salvar nesta sessão.');
       return;
     }
-    const name = prompt('Nome da sessão:', `Sessão ${formatDate24(Date.now())}`);
+
+    // --- alteração do Passo B: sugestão de nome padrão "Sessão N" ---
+    // calcular N a partir de sessões carregadas (window._sessionsCache) se disponível
+    let defaultIndex = 1;
+    try {
+      if (Array.isArray(window._sessionsCache)) {
+        defaultIndex = (window._sessionsCache.length || 0) + 1;
+      }
+    } catch (_) { defaultIndex = 1; }
+    const name = prompt('Nome da sessão:', `Sessão ${defaultIndex}`);
     if (!name) return;
+
     const recRefs = workspace.map((r, idx) => {
       if (r && typeof r.id === 'number') return r.id;
       // embed the object if not persisted
@@ -209,6 +219,102 @@ async function onSaveSessionClicked() {
     console.warn('attachSaveListener error:', err);
   }
 })();
+
+// util local para converter base64 -> Blob (independente de outras implementações)
+function _base64ToBlob_local(base64, mime = 'audio/webm') {
+  try {
+    const byteChars = atob(base64);
+    const byteNumbers = new Array(byteChars.length);
+    for (let i = 0; i < byteChars.length; i++) {
+      byteNumbers[i] = byteChars.charCodeAt(i);
+    }
+    const byteArray = new Uint8Array(byteNumbers);
+    return new Blob([byteArray], { type: mime });
+  } catch (err) {
+    console.warn('base64->Blob falhou:', err);
+    return null;
+  }
+}
+
+// util: converte blob -> base64 (usado para comparar gravações)
+// retorna string base64 (sem data: prefix)
+function _blobToBase64_local(blob) {
+  return new Promise((resolve, reject) => {
+    try {
+      const fr = new FileReader();
+      fr.onload = () => {
+        const dataUrl = fr.result || '';
+        const comma = dataUrl.indexOf(',');
+        resolve(dataUrl.slice(comma + 1));
+      };
+      fr.onerror = (e) => reject(e);
+      fr.readAsDataURL(blob);
+    } catch (err) {
+      reject(err);
+    }
+  });
+}
+
+// Verifica se já existe gravação com mesmo base64; retorna id ou null
+async function _findExistingRecordingByBase64(base64) {
+  try {
+    if (typeof window.getAllRecordingsFromDb !== 'function') return null;
+    const all = await window.getAllRecordingsFromDb();
+    if (!Array.isArray(all)) return null;
+    for (const r of all) {
+      if (!r || !r.blob) continue;
+      try {
+        const rb64 = await _blobToBase64_local(r.blob);
+        if (rb64 === base64) return r.id;
+      } catch (e) {
+        // ignore individual failures
+      }
+    }
+    return null;
+  } catch (err) {
+    console.warn('Erro em _findExistingRecordingByBase64:', err);
+    return null;
+  }
+}
+
+// Gera fingerprint de uma lista de gravações (recebe array de objetos: { name, date, blobBase64 } ou ids)
+// Retorna string (ordenada) para comparar sessões
+async function _computeSessionFingerprint(recordingEntries) {
+  const parts = [];
+  for (const r of recordingEntries) {
+    if (!r) continue;
+    if (typeof r === 'number' || typeof r === 'string') {
+      // buscar no DB
+      if (typeof window.getRecordingById === 'function') {
+        try {
+          const rec = await window.getRecordingById(r);
+          if (rec) {
+            const b64 = rec.blob ? await _blobToBase64_local(rec.blob).catch(()=>'') : '';
+            parts.push([rec.name || '', rec.date || '', b64].join('|'));
+          }
+        } catch (e) {
+          parts.push(String(r));
+        }
+      } else {
+        parts.push(String(r));
+      }
+    } else if (r && r.blobBase64) {
+      parts.push([r.name || '', r.date || '', r.blobBase64].join('|'));
+    } else if (r && r.blob) {
+      try {
+        const b64 = await _blobToBase64_local(r.blob).catch(()=>'');
+        parts.push([r.name || '', r.date || '', b64].join('|'));
+      } catch (e) {
+        parts.push([r.name || '', r.date || ''].join('|'));
+      }
+    } else {
+      // generic object
+      parts.push([r.name || '', r.date || '', JSON.stringify(r.id || '')].join('|'));
+    }
+  }
+  parts.sort();
+  return parts.join('||');
+}
 
 // export session helper (used by render)
 async function exportSessionById(sessionId) {
@@ -249,42 +355,9 @@ async function exportSessionById(sessionId) {
   a.click();
 }
 
-// Expor funções e iniciar não-bloqueante
-window.loadSessions = loadSessions;
-window.renderSessionsList = renderSessionsList;
-window.selectSession = selectSession;
-window.exportSessionById = exportSessionById;
-
-(function initSessions() {
-  try {
-    if (typeof window.openDb === 'function') {
-      window.openDb().catch(err => console.warn('openDb falhou no sessions init:', err));
-    }
-    loadSessions().catch(err => console.warn('loadSessions no init falhou (não bloqueante):', err));
-  } catch (err) {
-    console.warn('Erro ao inicializar sessions (não fatal):', err);
-  }
-})();
-
-// Adicionar no final de sessions.js (ou logo após exportSessionById)
-
-// util local para converter base64 -> Blob (independente de outras implementações)
-function _base64ToBlob_local(base64, mime = 'application/octet-stream') {
-  try {
-    const byteChars = atob(base64);
-    const byteNumbers = new Array(byteChars.length);
-    for (let i = 0; i < byteChars.length; i++) {
-      byteNumbers[i] = byteChars.charCodeAt(i);
-    }
-    const byteArray = new Uint8Array(byteNumbers);
-    return new Blob([byteArray], { type: mime });
-  } catch (err) {
-    console.warn('base64->Blob falhou:', err);
-    return null;
-  }
-}
-
-// Handler: exportar sessão selecionada via botão global #export-session-btn
+// ------------------------------
+// NOVO: listener para o botão global 'Exportar sessão' (topo)
+// ------------------------------
 (function attachExportSessionBtn() {
   try {
     const btn = document.getElementById('export-session-btn');
@@ -312,7 +385,9 @@ function _base64ToBlob_local(base64, mime = 'application/octet-stream') {
   }
 })();
 
-// Handler: importar sessão (input #import-session-input)
+// ------------------------------
+// NOVO: listener para input 'Importar sessão' (topo) - import/session.json
+// ------------------------------
 (function attachImportSessionInput() {
   try {
     const input = document.getElementById('import-session-input');
@@ -324,39 +399,136 @@ function _base64ToBlob_local(base64, mime = 'application/octet-stream') {
       try {
         const text = await f.text();
         const parsed = JSON.parse(text);
-        // Expect: { name, date, recordings: [{ id?, name, date, blobBase64 }] }
-        const recRefs = [];
-        if (Array.isArray(parsed.recordings)) {
-          for (const r of parsed.recordings) {
-            if (!r) continue;
-            if (r.blobBase64) {
-              const mime = (r.mimeType || 'audio/webm') ;
-              const blob = _base64ToBlob_local(r.blobBase64, mime);
-              if (!blob) {
-                console.warn('Falha ao converter base64 para blob para gravação', r);
-                continue;
-              }
-              if (typeof window.saveRecordingToDbObj === 'function') {
+        if (!parsed || !Array.isArray(parsed.recordings)) {
+          alert('Arquivo de sessão inválido (formato esperado).');
+          input.value = '';
+          return;
+        }
+
+        // Preparar mapa de base64 existentes (para deduplicar gravações)
+        const existingBase64ToId = new Map();
+        if (typeof window.getAllRecordingsFromDb === 'function') {
+          try {
+            const allRecs = await window.getAllRecordingsFromDb();
+            for (const er of (allRecs || [])) {
+              if (er && er.blob) {
                 try {
-                  const id = await window.saveRecordingToDbObj({ name: r.name || '', date: r.date || Date.now(), blob });
-                  recRefs.push(id);
-                } catch (err) {
-                  console.warn('Falha ao salvar gravação importada no DB, mantendo embutida:', err);
-                  recRefs.push({ id: (r.id || null), name: r.name, date: r.date, blob });
-                }
-              } else {
-                // fallback: embed the object
-                recRefs.push({ id: (r.id || null), name: r.name, date: r.date, blob });
+                  const eb64 = await _blobToBase64_local(er.blob).catch(()=>null);
+                  if (eb64) existingBase64ToId.set(eb64, er.id);
+                } catch (e) { /* ignore per-record */ }
               }
-            } else if (r.id || typeof r === 'number' || typeof r === 'string') {
-              recRefs.push(r.id !== undefined ? r.id : r);
-            } else {
-              // object without blob, keep as-is
-              recRefs.push(r);
             }
+          } catch (e) {
+            console.warn('Falha ao carregar gravações existentes para deduplicação:', e);
           }
         }
-        const session = { name: parsed.name || `Imported ${Date.now()}`, date: parsed.date || Date.now(), recordings: recRefs };
+
+        const recRefs = [];
+        for (const r of parsed.recordings) {
+          if (!r) continue;
+          // Caso 1: gravação fornecida em base64 (export)
+          if (r.blobBase64) {
+            // se existir uma gravação idêntica no DB, reutilizar id
+            const existingId = existingBase64ToId.get(r.blobBase64);
+            if (existingId !== undefined && existingId !== null) {
+              // reutiliza id existente (evita duplicação)
+              recRefs.push(existingId);
+              continue;
+            }
+
+            // se veio com id e esse id existe no DB, buscar e comparar
+            if (r.id && typeof r.id !== 'object' && typeof window.getRecordingById === 'function') {
+              try {
+                const maybe = await window.getRecordingById(r.id);
+                if (maybe && maybe.blob) {
+                  const maybeB64 = await _blobToBase64_local(maybe.blob).catch(()=>null);
+                  if (maybeB64 === r.blobBase64) {
+                    // mesmo conteúdo, reutiliza id
+                    recRefs.push(r.id);
+                    continue;
+                  } else {
+                    // id igual mas conteúdo diferente -> perguntar ao usuário
+                    const ok = confirm(`Gravação com id ${r.id} já existe com conteúdo diferente.\nClique OK para criar uma nova gravação (não sobrescrever), Cancel para ignorar esta gravação.`);
+                    if (ok) {
+                      // salvar como novo
+                      if (typeof window.saveRecordingToDbObj === 'function') {
+                        try {
+                          const newId = await window.saveRecordingToDbObj({ name: r.name || '', date: r.date || Date.now(), blob: _base64ToBlob_local(r.blobBase64) });
+                          recRefs.push(newId);
+                        } catch (err) {
+                          console.warn('Falha ao salvar gravação importada no DB, mantendo-a embutida:', err);
+                          recRefs.push({ id: null, name: r.name, date: r.date, blob: _base64ToBlob_local(r.blobBase64) });
+                        }
+                      } else {
+                        recRefs.push({ id: null, name: r.name, date: r.date, blob: _base64ToBlob_local(r.blobBase64) });
+                      }
+                    } else {
+                      // ignorar
+                      continue;
+                    }
+                    continue;
+                  }
+                }
+              } catch (e) {
+                // não existe id no DB; seguirá para salvar normalmente
+              }
+            }
+
+            // caso padrão: salvar gravação (se possível) ou embutir
+            if (typeof window.saveRecordingToDbObj === 'function') {
+              try {
+                const blob = _base64ToBlob_local(r.blobBase64);
+                const newId = await window.saveRecordingToDbObj({ name: r.name || '', date: r.date || Date.now(), blob });
+                // atualizar mapa para evitar salvar duplicados subsequentes
+                existingBase64ToId.set(r.blobBase64, newId);
+                recRefs.push(newId);
+              } catch (err) {
+                console.warn('Falha ao salvar gravação importada no DB, mantendo embutida:', err);
+                recRefs.push({ id: r.id || null, name: r.name, date: r.date, blob: _base64ToBlob_local(r.blobBase64) });
+              }
+            } else {
+              // fallback: embutir the object with blob
+              recRefs.push({ id: r.id || null, name: r.name, date: r.date, blob: _base64ToBlob_local(r.blobBase64) });
+            }
+          } else if (r.id || typeof r === 'number' || typeof r === 'string') {
+            // se vier apenas id referenciado, tentar reutilizar
+            recRefs.push(r.id !== undefined ? r.id : r);
+          } else {
+            // objeto parcial: inserir como embutido
+            recRefs.push(r);
+          }
+        }
+
+        // Antes de salvar a sessão, checar duplicidade contra sessions existentes
+        const importedFingerprint = await _computeSessionFingerprint(parsed.recordings);
+        let duplicateFound = false;
+        if (typeof window.getAllSessionsFromDb === 'function') {
+          try {
+            const allSess = await window.getAllSessionsFromDb();
+            for (const s of (allSess || [])) {
+              try {
+                const sFingerprint = await _computeSessionFingerprint(s.recordings || []);
+                if (sFingerprint === importedFingerprint) {
+                  duplicateFound = true;
+                  alert(`Sessão "${parsed.name || '(sem nome)'}" parece já existir (id ${s.id}). Importação ignorada.`);
+                  break;
+                }
+              } catch (e) {
+                // ignore per-session errors
+              }
+            }
+          } catch (e) {
+            console.warn('Falha ao verificar sessões existentes para duplicidade:', e);
+          }
+        }
+
+        if (duplicateFound) {
+          input.value = '';
+          return;
+        }
+
+        // montar sessão final e salvar
+        const session = { name: parsed.name || `Sessão importada ${Date.now()}`, date: parsed.date || Date.now(), recordings: recRefs };
         if (typeof window.saveSessionToDb === 'function') {
           await window.saveSessionToDb(session);
         } else {
@@ -368,12 +540,28 @@ function _base64ToBlob_local(base64, mime = 'application/octet-stream') {
         console.error('Erro ao importar sessão:', err);
         alert('Erro ao importar sessão. Veja o console para mais detalhes.');
       } finally {
-        // limpar input para permitir importar o mesmo arquivo novamente se necessário
         try { input.value = ''; } catch(_) {}
       }
     });
     input.__sessions_import_bound = true;
   } catch (err) {
     console.warn('attachImportSessionInput error:', err);
+  }
+})();
+
+// Expor funções e iniciar não-bloqueante
+window.loadSessions = loadSessions;
+window.renderSessionsList = renderSessionsList;
+window.selectSession = selectSession;
+window.exportSessionById = exportSessionById;
+
+(function initSessions() {
+  try {
+    if (typeof window.openDb === 'function') {
+      window.openDb().catch(err => console.warn('openDb falhou no sessions init:', err));
+    }
+    loadSessions().catch(err => console.warn('loadSessions no init falhou (não bloqueante):', err));
+  } catch (err) {
+    console.warn('Erro ao inicializar sessions (não fatal):', err);
   }
 })();

@@ -1,3 +1,12 @@
+/* name=style.css */
+/* ===========================
+   VoxScripta - style.css
+   Versão ajustada (Passo A):
+   - truncamento/rolamento da lista de sessões
+   - padronização visual de botões
+   - regras adicionais não intrusivas
+   =========================== */
+
 :root{
   --bg: #fafafa;
   --panel: #ffffff;
@@ -106,14 +115,19 @@ body {
 
 /* sessions list (topo) */
 .sessions-list {
-  max-height: 160px;
+  /* Aumentei a altura permitida e garanti overflow vertical.
+     Evita scroll horizontal indesejado (texto será truncado) */
+  max-height: 240px;
   overflow-y: auto;
+  overflow-x: hidden;
   display:flex;
   flex-direction:column;
   gap:6px;
   margin-bottom:8px;
   padding-right: 6px; /* evita que o scrollbar empurre conteúdo */
 }
+
+/* Session item: manter em uma linha e truncar o texto longo */
 .session-item {
   background: rgba(123,63,228,0.04);
   border-radius: 8px;
@@ -127,6 +141,14 @@ body {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+/* permitir truncamento dentro de flex */
+.session-item > div:first-child {
+  flex: 1 1 auto;
+  min-width: 0; /* essencial para text-overflow dentro de flex */
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .session-item:hover { background: rgba(123,63,228,0.08); transform: translateY(-1px); }
 
@@ -242,7 +264,7 @@ body {
   align-items: stretch;
 }
 .recording-item.expanded .meta,
-.recording-item.expanded .item-controls,
+recording-item.expanded .item-controls,
 .recording-item.expanded .full-date {
   display: block;
 }
@@ -250,7 +272,48 @@ body {
 .recording-name { flex: 1; font-size: 13px; font-weight:500; color:#222; overflow:hidden; white-space:nowrap; text-overflow:ellipsis; }
 .recording-meta { font-size: 12px; color:#666; margin-left:6px; white-space:nowrap; }
 
-/* botão play menor e alinhado */
+/* PADRONIZAÇÃO DE BOTOES - classe base .btn e adaptações para classes existentes */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  cursor: pointer;
+  padding: 6px 8px;
+  border-radius: 10px;
+  background: linear-gradient(180deg,#fff,#f6f6f6);
+  color: #333;
+  transition: transform 120ms ease, box-shadow 120ms ease;
+  font-size: 14px;
+}
+.btn:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 8px 18px rgba(0,0,0,0.06);
+}
+/* variantes para as classes já utilizadas no HTML/JS */
+.small, .icon-btn, .play-btn, .rename-btn, .delete-btn {
+  /* reaproveitar estilo similar ao .btn, sem quebrar pads dos ícones */
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  cursor: pointer;
+  padding: 6px 8px;
+  border-radius: 8px;
+  background: linear-gradient(180deg,#fff,#f6f6f6);
+  color: #333;
+  transition: transform 120ms ease, box-shadow 120ms ease;
+  font-size: 13px;
+}
+.small:hover, .icon-btn:hover, .play-btn:hover, .rename-btn:hover, .delete-btn:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 8px 18px rgba(0,0,0,0.06);
+}
+.icon-btn { padding: 6px; min-width: 34px; min-height: 34px; }
+.play-btn { padding: 6px 10px; border-radius: 8px; color: var(--accent); }
+.rename-btn, .delete-btn { background: none; color: inherit; padding: 6px; border-radius: 8px; }
+
+/* botão play menor e alinhado (mantive o visual original por compatibilidade) */
 .rename-btn, .delete-btn, .play-btn {
   background: none;
   border: none;
