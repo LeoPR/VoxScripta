@@ -265,3 +265,115 @@ window.exportSessionById = exportSessionById;
     console.warn('Erro ao inicializar sessions (não fatal):', err);
   }
 })();
+
+// Adicionar no final de sessions.js (ou logo após exportSessionById)
+
+// util local para converter base64 -> Blob (independente de outras implementações)
+function _base64ToBlob_local(base64, mime = 'application/octet-stream') {
+  try {
+    const byteChars = atob(base64);
+    const byteNumbers = new Array(byteChars.length);
+    for (let i = 0; i < byteChars.length; i++) {
+      byteNumbers[i] = byteChars.charCodeAt(i);
+    }
+    const byteArray = new Uint8Array(byteNumbers);
+    return new Blob([byteArray], { type: mime });
+  } catch (err) {
+    console.warn('base64->Blob falhou:', err);
+    return null;
+  }
+}
+
+// Handler: exportar sessão selecionada via botão global #export-session-btn
+(function attachExportSessionBtn() {
+  try {
+    const btn = document.getElementById('export-session-btn');
+    if (!btn) return;
+    if (btn.__sessions_export_bound) return;
+    btn.addEventListener('click', async () => {
+      if (!window.selectedSessionId) {
+        alert('Nenhuma sessão selecionada para exportar.');
+        return;
+      }
+      try {
+        if (typeof window.exportSessionById === 'function') {
+          await window.exportSessionById(window.selectedSessionId);
+        } else {
+          await exportSessionById(window.selectedSessionId);
+        }
+      } catch (err) {
+        console.error('Erro ao exportar sessão (global):', err);
+        alert('Erro ao exportar sessão. Veja o console para mais detalhes.');
+      }
+    });
+    btn.__sessions_export_bound = true;
+  } catch (err) {
+    console.warn('attachExportSessionBtn error:', err);
+  }
+})();
+
+// Handler: importar sessão (input #import-session-input)
+(function attachImportSessionInput() {
+  try {
+    const input = document.getElementById('import-session-input');
+    if (!input) return;
+    if (input.__sessions_import_bound) return;
+    input.addEventListener('change', async (ev) => {
+      const f = (ev.target && ev.target.files && ev.target.files[0]) ? ev.target.files[0] : null;
+      if (!f) return;
+      try {
+        const text = await f.text();
+        const parsed = JSON.parse(text);
+        // Expect: { name, date, recordings: [{ id?, name, date, blobBase64 }] }
+        const recRefs = [];
+        if (Array.isArray(parsed.recordings)) {
+          for (const r of parsed.recordings) {
+            if (!r) continue;
+            if (r.blobBase64) {
+              const mime = (r.mimeType || 'audio/webm') ;
+              const blob = _base64ToBlob_local(r.blobBase64, mime);
+              if (!blob) {
+                console.warn('Falha ao converter base64 para blob para gravação', r);
+                continue;
+              }
+              if (typeof window.saveRecordingToDbObj === 'function') {
+                try {
+                  const id = await window.saveRecordingToDbObj({ name: r.name || '', date: r.date || Date.now(), blob });
+                  recRefs.push(id);
+                } catch (err) {
+                  console.warn('Falha ao salvar gravação importada no DB, mantendo embutida:', err);
+                  recRefs.push({ id: (r.id || null), name: r.name, date: r.date, blob });
+                }
+              } else {
+                // fallback: embed the object
+                recRefs.push({ id: (r.id || null), name: r.name, date: r.date, blob });
+              }
+            } else if (r.id || typeof r === 'number' || typeof r === 'string') {
+              recRefs.push(r.id !== undefined ? r.id : r);
+            } else {
+              // object without blob, keep as-is
+              recRefs.push(r);
+            }
+          }
+        }
+        const session = { name: parsed.name || `Imported ${Date.now()}`, date: parsed.date || Date.now(), recordings: recRefs };
+        if (typeof window.saveSessionToDb === 'function') {
+          await window.saveSessionToDb(session);
+        } else {
+          await saveSessionToDb(session);
+        }
+        await loadSessions().catch(()=>{});
+        alert('Sessão importada com sucesso.');
+      } catch (err) {
+        console.error('Erro ao importar sessão:', err);
+        alert('Erro ao importar sessão. Veja o console para mais detalhes.');
+      } finally {
+        // limpar input para permitir importar o mesmo arquivo novamente se necessário
+        try { input.value = ''; } catch(_) {}
+      }
+    });
+    input.__sessions_import_bound = true;
+  } catch (err) {
+    console.warn('attachImportSessionInput error:', err);
+  }
+})();
