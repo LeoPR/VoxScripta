@@ -177,7 +177,7 @@ function renderSessionsList() {
 }
 
 // ------------------------------
-// Render recordings list in workspace
+// Render recordings list in workspace (padronizado visualmente com sessions)
 // ------------------------------
 function renderRecordingsList(list) {
   const container = document.getElementById('recordings-list');
@@ -196,7 +196,7 @@ function renderRecordingsList(list) {
     left.style.flex = '1 1 auto';
     left.style.minWidth = '0'; // permite truncamento do título
 
-    // título com badge(s) inline
+    // título com badges inline (linha 1)
     const titleRow = document.createElement('div');
     titleRow.style.display = 'flex';
     titleRow.style.alignItems = 'center';
@@ -236,19 +236,28 @@ function renderRecordingsList(list) {
 
     item.appendChild(left);
 
-    // Right: ações (play, export, rename, delete)
+    // Right: ações agrupadas (padronizado com sessions)
+    const right = document.createElement('div');
+    right.style.display = 'flex';
+    right.style.gap = '8px';
+    right.style.alignItems = 'center';
+
     const play = document.createElement('button');
     play.className = 'play-btn';
-    play.textContent = '▶';
+    play.innerHTML = '▶';
+    play.title = 'Reproduzir';
+    play.setAttribute('aria-label', 'Reproduzir gravação');
     play.onclick = (ev) => {
       ev.stopPropagation();
       playRecording(rec);
     };
-    item.appendChild(play);
+    right.appendChild(play);
 
     const exportBtn = document.createElement('button');
     exportBtn.className = 'small';
-    exportBtn.textContent = 'Exportar';
+    exportBtn.innerHTML = '⤓';
+    exportBtn.title = 'Exportar gravação';
+    exportBtn.setAttribute('aria-label', 'Exportar gravação');
     exportBtn.onclick = (ev) => {
       ev.stopPropagation();
       if (rec && typeof rec.id === 'number' && typeof window.getRecordingById === 'function') {
@@ -284,11 +293,13 @@ function renderRecordingsList(list) {
         alert('Gravação não disponível para exportação.');
       }
     };
-    item.appendChild(exportBtn);
+    right.appendChild(exportBtn);
 
     const rename = document.createElement('button');
     rename.className = 'rename-btn';
-    rename.textContent = '✏️';
+    rename.innerHTML = '✏️';
+    rename.title = 'Editar nome';
+    rename.setAttribute('aria-label', 'Editar gravação');
     rename.onclick = (ev) => {
       ev.stopPropagation();
       const input = document.createElement('input');
@@ -311,11 +322,13 @@ function renderRecordingsList(list) {
       title.appendChild(input);
       input.focus();
     };
-    item.appendChild(rename);
+    right.appendChild(rename);
 
     const del = document.createElement('button');
     del.className = 'delete-btn';
-    del.textContent = '🗑️';
+    del.innerHTML = '🗑️';
+    del.title = 'Apagar gravação';
+    del.setAttribute('aria-label', 'Apagar gravação');
     del.onclick = (ev) => {
       ev.stopPropagation();
       if (!confirm('Apagar gravação?')) return;
@@ -346,7 +359,9 @@ function renderRecordingsList(list) {
         renderRecordingsList(recordings);
       }
     };
-    item.appendChild(del);
+    right.appendChild(del);
+
+    item.appendChild(right);
 
     item.onclick = () => selectRecordingInUI(idx, rec);
     container.appendChild(item);

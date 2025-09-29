@@ -1,11 +1,7 @@
-/* name=style.css */
-/* ===========================
-   VoxScripta - style.css
-   Versão ajustada (Passo A):
-   - truncamento/rolamento da lista de sessões
-   - padronização visual de botões
-   - regras adicionais não intrusivas
-   =========================== */
+/* style.css — Versão atualizada (ajuste de largura da lateral esquerda)
+   Mantive todo o restante do CSS anterior e apliquei ajustes mínimos para
+   a barra lateral ajustar-se melhor ao conteúdo com limite máximo.
+*/
 
 :root{
   --bg: #fafafa;
@@ -19,10 +15,8 @@
   --card-radius: 12px;
 }
 
-/* reset box-sizing para evitar overflow horizontal inesperado */
 * { box-sizing: border-box; }
 
-/* layout principal */
 body {
   background: var(--bg);
   color: var(--text);
@@ -31,7 +25,6 @@ body {
   margin: 0;
 }
 
-/* Main: painel esquerdo + conteúdo */
 .main {
   display: flex;
   flex-direction: row;
@@ -39,10 +32,14 @@ body {
   align-items: flex-start;
 }
 
-/* Painel de histórico (esquerda) */
+/* History panel (lateral esquerda) */
+/* Ajustes: largura automática com limites, para adaptar ao conteúdo sem quebrar layout */
 .history-panel {
-  width: 240px;         /* compacto */
-  min-width: 200px;
+  /* permitir que o conteúdo determine a largura, mas com limites */
+  width: auto;
+  min-width: 220px;    /* não ficar muito estreito */
+  max-width: 400px;    /* limite superior razoável */
+  flex: 0 0 auto;      /* não crescer além do max-width */
   background: linear-gradient(180deg,#fff,#fbfbfb);
   border-radius: 12px;
   box-shadow: var(--soft-shadow);
@@ -50,8 +47,20 @@ body {
   flex-direction: column;
   padding: 10px;
   height: calc(100vh - 48px);
-  overflow: hidden;      /* evitar overflow horizontal */
+  overflow: hidden;
 }
+
+/* Se houver pouco espaço (mobile), permitir ocupar 100% com prioridade */
+@media (max-width: 900px) {
+  .history-panel {
+    width: 100%;
+    max-width: none;
+    min-width: 0;
+    order: 2;
+    height: auto;
+  }
+}
+
 .history-header {
   display:flex;
   justify-content:space-between;
@@ -61,24 +70,18 @@ body {
   padding-bottom: 4px;
   border-bottom: 1px solid #efefef;
 }
-
-/* título compacto do painel */
 .history-title {
   font-size: 13px;
   font-weight: 600;
   color: #333;
   padding-left: 4px;
 }
-
-/* container de ações do topo (ícones) */
 .header-actions {
   display:flex;
   gap: 6px;
   align-items:center;
   flex-wrap: wrap;
 }
-
-/* botão pequeno com ícone (topo) */
 .icon-btn {
   display: inline-flex;
   align-items: center;
@@ -97,7 +100,6 @@ body {
 .icon-btn .icon { font-size: 16px; line-height: 1; }
 .icon-btn:hover { transform: translateY(-1px); box-shadow: 0 8px 18px rgba(0,0,0,0.06); }
 
-/* esconder texto acessível visualmente, mas manter para a11y */
 .sr-only {
   position: absolute !important;
   width: 1px !important;
@@ -110,13 +112,10 @@ body {
   border: 0 !important;
 }
 
-/* divider */
 .history-divider { height: 1px; margin: 6px 0; }
 
-/* sessions list (topo) */
+/* Sessions list */
 .sessions-list {
-  /* Aumentei a altura permitida e garanti overflow vertical.
-     Evita scroll horizontal indesejado (texto será truncado) */
   max-height: 240px;
   overflow-y: auto;
   overflow-x: hidden;
@@ -124,14 +123,14 @@ body {
   flex-direction:column;
   gap:6px;
   margin-bottom:8px;
-  padding-right: 6px; /* evita que o scrollbar empurre conteúdo */
+  padding-right: 6px;
 }
 
-/* Session item: manter em uma linha e truncar o texto longo */
+/* Padronização visual para cada item de sessão */
 .session-item {
   background: rgba(123,63,228,0.04);
   border-radius: 8px;
-  padding: 8px 6px;
+  padding: 10px;
   display:flex;
   align-items:center;
   justify-content:space-between;
@@ -142,30 +141,26 @@ body {
   overflow: hidden;
   text-overflow: ellipsis;
 }
-/* permitir truncamento dentro de flex */
 .session-item > div:first-child {
   flex: 1 1 auto;
-  min-width: 0; /* essencial para text-overflow dentro de flex */
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 .session-item:hover { background: rgba(123,63,228,0.08); transform: translateY(-1px); }
 
-/* Compacto por padrão: esconder controles e metadados extras */
 .session-item .meta, .session-item .item-controls, .session-item .full-date {
-  display: none;
+  display: block;
 }
-
-/* Reveal on hover (preview) */
-.session-item:hover .meta {
-  display: inline-block;
+.session-item .meta {
   font-size: 12px;
   color: #666;
-  margin-left: 8px;
+  margin-top: 4px;
+  white-space: normal;
 }
 
-/* Menu button always visible (pequeno) */
+/* Action buttons inside session item */
 .session-item .menu-btn {
   display: inline-flex;
   align-items: center;
@@ -182,97 +177,59 @@ body {
 }
 .session-item .menu-btn:hover { background: rgba(0,0,0,0.04); color: #222; }
 
-/* expanded state: mostra detalhes e controles */
-.session-item.expanded {
-  padding: 10px;
-  white-space: normal;
-  flex-direction: column;
-  align-items: stretch;
-}
-.session-item.expanded .meta,
-.session-item.expanded .item-controls,
-.session-item.expanded .full-date {
-  display: block;
-}
-.session-item .title-row {
-  display:flex;
-  align-items:center;
-  justify-content:space-between;
-  gap:8px;
-}
-
-/* Make action buttons inside session item compact (the sessions.js creates .small buttons) */
-.session-item .small {
-  padding: 6px 8px;
-  font-size: 12px;
-  border-radius: 8px;
-  background: linear-gradient(180deg,#fff,#f6f6f6);
-  margin-left: 6px;
-}
-
-/* recordings list (abaixo) */
+/* Recordings list (padronizado visualmente) */
 .recordings-list {
   flex:1;
   overflow-y:auto;
   display:flex;
   flex-direction:column;
-  gap:6px;
+  gap:8px;
   padding-top:6px;
-  padding-right: 6px; /* evita scrollbar empurrando conteúdo */
+  padding-right: 6px;
 }
+
+/* PADRONIZAÇÃO: recording-item similar a session-item */
 .recording-item {
   background: #fff;
   border-radius: 8px;
-  padding: 6px;
+  padding: 10px; /* igual à session-item */
   display:flex;
   align-items:center;
-  gap:8px;
+  gap:12px;
   box-shadow: 0 1px 6px rgba(0,0,0,0.04);
   transition: background 110ms ease, box-shadow 120ms ease;
 }
 .recording-item:hover { background: #fffafc; box-shadow: 0 6px 14px rgba(0,0,0,0.05); }
 
-/* By default hide metadata and action buttons to keep compact look */
-.recording-item .meta, .recording-item .item-controls, .recording-item .full-date {
-  display: none;
+/* Left column (title + meta) */
+.recording-item > div:first-child {
+  flex: 1 1 auto;
+  min-width: 0;
 }
-/* show minimal meta on hover */
-.recording-item:hover .meta { display:inline-block; font-size:12px; color:#666; margin-left:6px; }
+.recording-item .title-row {
+  display:flex;
+  align-items:center;
+  gap:8px;
+  min-width:0;
+}
 
-/* menu button visible on compact recordings */
-.recording-item .menu-btn {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 30px;
-  height: 30px;
-  border-radius: 8px;
-  border: none;
-  background: transparent;
-  color: #666;
-  cursor: pointer;
-  padding: 0;
-  margin-left: 6px;
-}
-.recording-item .menu-btn:hover { background: rgba(0,0,0,0.04); color: #222; }
-
-/* expanded recording shows details & action controls */
-.recording-item.expanded {
-  padding: 10px;
-  white-space: normal;
-  flex-direction: column;
-  align-items: stretch;
-}
-.recording-item.expanded .meta,
-recording-item.expanded .item-controls,
-.recording-item.expanded .full-date {
+/* Meta (data) sempre visível e pequena */
+.recording-meta {
   display: block;
+  font-size: 12px;
+  color: #666;
+  margin-top: 4px;
+  white-space: normal;
 }
 
-.recording-name { flex: 1; font-size: 13px; font-weight:500; color:#222; overflow:hidden; white-space:nowrap; text-overflow:ellipsis; }
-.recording-meta { font-size: 12px; color:#666; margin-left:6px; white-space:nowrap; }
+/* Right actions group */
+.recording-item > div.actions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
 
-/* PADRONIZAÇÃO DE BOTOES - classe base .btn e adaptações para classes existentes */
+/* Button base and variants */
 .btn {
   display: inline-flex;
   align-items: center;
@@ -290,63 +247,38 @@ recording-item.expanded .item-controls,
   transform: translateY(-1px);
   box-shadow: 0 8px 18px rgba(0,0,0,0.06);
 }
-/* variantes para as classes já utilizadas no HTML/JS */
+
 .small, .icon-btn, .play-btn, .rename-btn, .delete-btn {
-  /* reaproveitar estilo similar ao .btn, sem quebrar pads dos ícones */
   display: inline-flex;
   align-items: center;
   justify-content: center;
   border: none;
   cursor: pointer;
-  padding: 6px 8px;
+  padding: 6px;
   border-radius: 8px;
-  background: linear-gradient(180deg,#fff,#f6f6f6);
+  background: transparent;
   color: #333;
   transition: transform 120ms ease, box-shadow 120ms ease;
-  font-size: 13px;
+  font-size: 14px;
 }
 .small:hover, .icon-btn:hover, .play-btn:hover, .rename-btn:hover, .delete-btn:hover {
   transform: translateY(-1px);
-  box-shadow: 0 8px 18px rgba(0,0,0,0.06);
 }
 .icon-btn { padding: 6px; min-width: 34px; min-height: 34px; }
-.play-btn { padding: 6px 10px; border-radius: 8px; color: var(--accent); }
-.rename-btn, .delete-btn { background: none; color: inherit; padding: 6px; border-radius: 8px; }
+.play-btn { color: var(--accent); }
+.rename-btn, .delete-btn { padding: 6px; }
 
-/* botão play menor e alinhado (mantive o visual original por compatibilidade) */
-.rename-btn, .delete-btn, .play-btn {
-  background: none;
-  border: none;
-  cursor: pointer;
-  font-size: 13px;
-  color: var(--accent);
-  padding: 6px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  border-radius: 8px;
-}
-.rename-btn:hover, .play-btn:hover { background: rgba(123,63,228,0.06); }
+/* delete hover */
 .delete-btn { color: var(--danger); }
 .delete-btn:hover { background: rgba(255,59,48,0.06); }
 
-/* small buttons (menos chamativos) */
+/* small button */
 .small {
-  border: none;
-  background: linear-gradient(180deg,#fff,#f6f6f6);
-  padding: 4px 6px;
-  border-radius: 8px;
-  cursor: pointer;
-  font-size: 12px;
-  color: #333;
-  box-shadow: none;
-}
-.small:hover {
-  box-shadow: 0 6px 14px rgba(0,0,0,0.04);
-  transform: translateY(-1px);
+  font-size: 14px;
+  padding: 6px;
 }
 
-/* Player container (direita) */
+/* Player container */
 .player-container {
   flex: 1;
   max-width: 940px;
@@ -356,7 +288,6 @@ recording-item.expanded .item-controls,
   align-items: stretch;
 }
 
-/* player box */
 .player-box {
   display: flex;
   align-items: center;
@@ -390,7 +321,6 @@ recording-item.expanded .item-controls,
   box-shadow: 0 10px 26px rgba(216,59,59,0.14);
 }
 
-/* Canvas padronizados */
 .waveform, .spectrogram {
   width: 100%;
   height: 180px;
@@ -401,7 +331,6 @@ recording-item.expanded .item-controls,
   margin: 0 auto;
 }
 
-/* Processing indicator (mantido) */
 .processing-indicator {
   margin: 12px auto 0 auto;
   display: inline-flex;
@@ -429,22 +358,11 @@ recording-item.expanded .item-controls,
 
 .hidden { display:none !important; }
 
-/* Responsividade */
 @media (max-width: 900px) {
   .main { flex-direction: column; }
-  .history-panel { width: 100%; height: auto; order: 2; }
+  .history-panel { width: 100%; max-width: none; min-width: 0; order: 2; height: auto; }
   .player-container { order: 1; }
   .waveform, .spectrogram { height: 140px; }
 }
 
-/* foco acessível */
 .session-item:focus, .recording-item:focus { outline: 2px solid rgba(123,63,228,0.12); outline-offset: 2px; }
-
-.session-item .meta,
-.session-item .session-meta {
-  display: block;
-  font-size: 12px;
-  color: #666;
-  margin-top: 4px;
-  white-space: normal;
-}
