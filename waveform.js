@@ -1,47 +1,427 @@
-// waveform.js - desenha a forma de onda (waveform)
-// expõe window.showWaveform(audioUrl)
+// waveform.js - desenho de waveform (versão com showWaveform do recorder.js)
+// + utilitários de trim de silêncio e desenho live.
+// Exporta globalmente:
+// window.showWaveform(source) // aceita Blob ou URL string
+// window.drawLiveWaveform(analyser)
+// window.stopLiveWaveform()
+// window.analyzeLeadingSilence(source, opts)
+// window.trimLeadingSilence(source, opts)
+// window.trimAndPersistRecording(source, opts)
 
-window.showWaveform = function(audioUrl) {
-  const waveform = document.getElementById('waveform');
-  if (!audioUrl) {
-    waveform.style.display = 'none';
-    return;
-  }
-  waveform.style.display = 'block';
-  const ctx = waveform.getContext('2d');
-  ctx.clearRect(0, 0, waveform.width, waveform.height);
+(function () {
+  'use strict';
 
-  const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-  fetch(audioUrl)
-    .then(res => res.arrayBuffer())
-    .then(arrayBuffer => audioCtx.decodeAudioData(arrayBuffer))
-    .then(audioBuffer => {
-      const rawData = audioBuffer.getChannelData(0); // Canal 0
-      const samples = waveform.width; // um ponto por pixel de largura
-      const blockSize = Math.floor(rawData.length / samples) || 1;
-      const filteredData = [];
-      for (let i = 0; i < samples; i++) {
-        let sum = 0;
-        for (let j = 0; j < blockSize; j++) {
-          sum += Math.abs(rawData[(i * blockSize) + j] || 0);
-        }
-        filteredData.push(sum / blockSize);
+  const defaultOptions = {
+    threshold: 0.01,       // limiar RMS para considerar som (ajuste conforme necessário)
+    chunkSizeMs: 10,       // janela em ms para calcular RMS
+    minNonSilenceMs: 50,   // tempo mínimo consecutivo > threshold para considerar som válido
+    outputMime: 'audio/wav'// formato de saída ao gerar Blob (WAV)
+  };
+
+  // ------------------------------
+  // Helpers: decode url/blob -> AudioBuffer
+  // ------------------------------
+  async function _decodeToAudioBuffer(source) {
+    const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    try {
+      let arrayBuffer;
+      if (source instanceof Blob) {
+        arrayBuffer = await source.arrayBuffer();
+      } else if (typeof source === 'string') {
+        const res = await fetch(source);
+        arrayBuffer = await res.arrayBuffer();
+      } else {
+        throw new Error('Fonte inválida (esperado URL ou Blob)');
       }
-      const max = Math.max(...filteredData) || 1;
+      const audioBuffer = await audioCtx.decodeAudioData(arrayBuffer.slice(0));
+      try { audioCtx.close && audioCtx.close(); } catch (_) {}
+      return audioBuffer;
+    } catch (err) {
+      try { audioCtx.close && audioCtx.close(); } catch (_) {}
+      throw err;
+    }
+  }
+
+  // ------------------------------
+  // drawWaveformFromSamples (versão do recorder.js)
+  // samples: Float32Array (canal 0)
+  // ------------------------------
+  function drawWaveformFromSamples(samples) {
+    const waveform = document.getElementById('waveform');
+    if (!waveform) return;
+    const dpr = window.devicePixelRatio || 1;
+    const container = waveform.parentElement || document.body;
+    const w = Math.min(940, container.clientWidth || 940);
+    const h = parseInt(getComputedStyle(waveform).height, 10) || 180;
+
+    waveform.width = Math.round(w * dpr);
+    waveform.height = Math.round(h * dpr);
+    waveform.style.width = w + 'px';
+    waveform.style.height = h + 'px';
+
+    const ctx = waveform.getContext('2d');
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, w, h);
+
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(0, 0, w, h);
+
+    ctx.lineWidth = 1;
+    ctx.strokeStyle = '#1976d2';
+    ctx.beginPath();
+
+    const step = Math.max(1, Math.floor(samples.length / w));
+    for (let i = 0; i < w; i++) {
+      const start = i * step;
+      let min = 1.0, max = -1.0;
+      for (let j = 0; j < step && (start + j) < samples.length; j++) {
+        const v = samples[start + j];
+        if (v < min) min = v;
+        if (v > max) max = v;
+      }
+      const y1 = (1 - (min + 1) / 2) * h;
+      const y2 = (1 - (max + 1) / 2) * h;
+      ctx.moveTo(i + 0.5, y1);
+      ctx.lineTo(i + 0.5, y2);
+    }
+    ctx.stroke();
+  }
+
+  // ------------------------------
+  // showWaveform (decodifica e desenha)
+  // aceita Blob ou URL string
+  // ------------------------------
+  async function showWaveform(source) {
+    const waveform = document.getElementById('waveform');
+    if (!waveform) return;
+    if (!source) {
+      waveform.style.display = 'none';
+      return;
+    }
+    waveform.style.display = 'block';
+    const ctx = waveform.getContext('2d');
+    ctx.clearRect(0, 0, waveform.width, waveform.height);
+
+    try {
+      let arrayBuffer;
+      if (source instanceof Blob) {
+        arrayBuffer = await source.arrayBuffer();
+      } else if (typeof source === 'string') {
+        const resp = await fetch(source);
+        arrayBuffer = await resp.arrayBuffer();
+      } else {
+        console.warn('showWaveform: fonte inválida');
+        return;
+      }
+      const aCtx = new (window.AudioContext || window.webkitAudioContext)();
+      const audioBuffer = await aCtx.decodeAudioData(arrayBuffer.slice(0));
+      const samples = audioBuffer.getChannelData(0);
+      drawWaveformFromSamples(samples);
+      aCtx.close().catch(()=>{});
+    } catch (err) {
+      console.error('Erro em showWaveform:', err);
+      waveform.style.display = 'none';
+    }
+  }
+
+  // ------------------------------
+  // Live waveform drawing (recebe um AnalyserNode)
+  // ------------------------------
+  let _liveAnimationId = null;
+  function drawLiveWaveform(analyser) {
+    if (!analyser) return;
+    const waveform = document.getElementById('waveform');
+    if (!waveform) return;
+    const bufferLength = analyser.fftSize;
+    const dataArray = new Uint8Array(bufferLength);
+    const dpr = window.devicePixelRatio || 1;
+    const container = waveform.parentElement || document.body;
+    const w = Math.min(940, container.clientWidth || 940);
+    const h = parseInt(getComputedStyle(waveform).height, 10) || 180;
+    waveform.width = Math.round(w * dpr);
+    waveform.height = Math.round(h * dpr);
+    waveform.style.width = w + 'px';
+    waveform.style.height = h + 'px';
+    const ctx = waveform.getContext('2d');
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+    function draw() {
+      analyser.getByteTimeDomainData(dataArray);
+      ctx.clearRect(0, 0, w, h);
       ctx.beginPath();
-      const height = waveform.height;
-      filteredData.forEach((val, i) => {
-        const x = i;
-        const y = height - (val / max * height);
-        if (i === 0) ctx.moveTo(x, y);
-        else ctx.lineTo(x, y);
-      });
-      ctx.strokeStyle = "#0077cc";
+      for (let i = 0; i < w; i++) {
+        const idx = Math.floor(i * bufferLength / w);
+        const v = dataArray[idx] / 128.0;
+        const y = (v * 0.5) * h;
+        const drawY = h / 2 + (y - h / 4);
+        if (i === 0) ctx.moveTo(i, drawY);
+        else ctx.lineTo(i, drawY);
+      }
+      ctx.strokeStyle = "#1976d2";
       ctx.lineWidth = 2;
       ctx.stroke();
-    })
-    .catch(err => {
-      console.error('Erro ao desenhar waveform:', err);
-      waveform.style.display = 'none';
-    });
-};
+      _liveAnimationId = requestAnimationFrame(draw);
+    }
+    if (_liveAnimationId) cancelAnimationFrame(_liveAnimationId);
+    draw();
+  }
+
+  function stopLiveWaveform() {
+    try {
+      if (_liveAnimationId) {
+        cancelAnimationFrame(_liveAnimationId);
+        _liveAnimationId = null;
+      }
+    } catch (e) {
+      // ignore
+    }
+  }
+
+  // ------------------------------
+  // Trim utilities (detecta silêncio e cria WAV correto)
+  // ------------------------------
+  function _rms(samples, start, len) {
+    let sum = 0;
+    for (let i = 0; i < len; i++) {
+      const v = samples[start + i] || 0;
+      sum += v * v;
+    }
+    return Math.sqrt(sum / Math.max(1, len));
+  }
+
+  async function analyzeLeadingSilence(source, opts = {}) {
+    const o = Object.assign({}, defaultOptions, opts);
+    const audioBuffer = await _decodeToAudioBuffer(source);
+    const sampleRate = audioBuffer.sampleRate;
+    const channelData = audioBuffer.numberOfChannels ? audioBuffer.getChannelData(0) : null;
+    if (!channelData) return { silenceEnd: 0, sampleRate, samples: 0 };
+
+    const chunkSize = Math.max(1, Math.floor((o.chunkSizeMs / 1000) * sampleRate));
+    const minNonSilenceChunks = Math.max(1, Math.floor((o.minNonSilenceMs / o.chunkSizeMs)));
+    let silenceChunks = 0;
+    let found = false;
+    let silenceEndSample = 0;
+
+    const totalChunks = Math.ceil(channelData.length / chunkSize);
+    for (let ci = 0; ci < totalChunks; ci++) {
+      const start = ci * chunkSize;
+      const len = Math.min(chunkSize, channelData.length - start);
+      const rms = _rms(channelData, start, len);
+      if (rms <= o.threshold) {
+        silenceChunks++;
+      } else {
+        let ok = true;
+        for (let look = 0; look < minNonSilenceChunks; look++) {
+          const idx = ci + look;
+          if (idx >= totalChunks) { ok = true; break; }
+          const s2 = idx * chunkSize;
+          const l2 = Math.min(chunkSize, channelData.length - s2);
+          const rms2 = _rms(channelData, s2, l2);
+          if (rms2 <= o.threshold) { ok = false; break; }
+        }
+        if (ok) {
+          silenceEndSample = Math.max(0, ci * chunkSize - silenceChunks * chunkSize);
+          found = true;
+          break;
+        } else {
+          silenceChunks = 0;
+        }
+      }
+    }
+
+    if (!found) {
+      return { silenceEnd: audioBuffer.duration, sampleRate, samples: channelData.length };
+    }
+
+    const silenceEnd = Math.min(audioBuffer.duration, silenceEndSample / sampleRate);
+    return { silenceEnd, sampleRate, samples: channelData.length };
+  }
+
+  // WAV encoder helpers (corrigidos: escreve header e PCM)
+  function _floatTo16BitPCM(float32Array) {
+    const l = float32Array.length;
+    const buffer = new ArrayBuffer(l * 2);
+    const view = new DataView(buffer);
+    let offset = 0;
+    for (let i = 0; i < l; i++, offset += 2) {
+      let s = Math.max(-1, Math.min(1, float32Array[i]));
+      s = s < 0 ? s * 0x8000 : s * 0x7FFF;
+      view.setInt16(offset, s, true);
+    }
+    return new Uint8Array(buffer);
+  }
+  function _writeString(view, offset, string) {
+    for (let i = 0; i < string.length; i++) view.setUint8(offset + i, string.charCodeAt(i));
+  }
+  function _encodeWAV(samples, sampleRate) {
+    const pcmBytes = _floatTo16BitPCM(samples);
+    const buffer = new ArrayBuffer(44 + pcmBytes.length);
+    const view = new DataView(buffer);
+    _writeString(view, 0, 'RIFF');
+    view.setUint32(4, 36 + pcmBytes.length, true);
+    _writeString(view, 8, 'WAVE');
+    _writeString(view, 12, 'fmt ');
+    view.setUint32(16, 16, true);
+    view.setUint16(20, 1, true); // PCM
+    view.setUint16(22, 1, true); // mono
+    view.setUint32(24, sampleRate, true);
+    view.setUint32(28, sampleRate * 2, true); // byte rate (sampleRate * blockAlign)
+    view.setUint16(32, 2, true); // blockAlign (2 bytes per sample)
+    view.setUint16(34, 16, true); // bitsPerSample
+    _writeString(view, 36, 'data');
+    view.setUint32(40, pcmBytes.length, true);
+    const wavBytes = new Uint8Array(buffer, 44);
+    wavBytes.set(pcmBytes);
+    return new Blob([buffer], { type: 'audio/wav' });
+  }
+
+  async function trimLeadingSilence(source, opts = {}) {
+    const o = Object.assign({}, defaultOptions, opts);
+    const audioBuffer = await _decodeToAudioBuffer(source);
+    if (!audioBuffer) throw new Error('Falha ao decodificar áudio');
+
+    const analysis = await analyzeLeadingSilence(source, o);
+    let startSec = analysis.silenceEnd || 0;
+    if (startSec >= audioBuffer.duration) {
+      const empty = new Float32Array(0);
+      return _encodeWAV(empty, audioBuffer.sampleRate);
+    }
+
+    const startSample = Math.floor(startSec * audioBuffer.sampleRate);
+    const remaining = audioBuffer.length - startSample;
+    const out = new Float32Array(remaining);
+    const ch0 = audioBuffer.getChannelData(0);
+    for (let i = 0; i < remaining; i++) {
+      out[i] = ch0[startSample + i];
+    }
+    const wavBlob = _encodeWAV(out, audioBuffer.sampleRate);
+    return wavBlob;
+  }
+
+  // Helpers para nome do Trim
+  function _escapeRegExp(s) { return String(s || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
+  function _stripTrimmedSuffix(name) {
+    const m = String(name || '').match(/^(.*?)(?:\s+Trimmed(?:\s+\d+)?)$/i);
+    return (m && m[1]) ? m[1] : (name || '');
+  }
+  function _getSelectedRecordingNameFromDOM() {
+    try {
+      const el = document.querySelector('#recordings-list .recording-item.selected .recording-name');
+      if (el) return (el.textContent || '').trim();
+    } catch (_) {}
+    return null;
+  }
+  function _getWorkspaceRecordingsSafe() {
+    try {
+      if (typeof window.getWorkspaceRecordings === 'function') {
+        const recs = window.getWorkspaceRecordings();
+        if (Array.isArray(recs)) return recs;
+      }
+    } catch (_) {}
+    return Array.isArray(window.recordings) ? window.recordings : [];
+  }
+  function _computeNextTrimmedName(baseName, recs) {
+    const base = (_stripTrimmedSuffix(baseName) || 'Gravação').trim();
+    const rx = new RegExp('^' + _escapeRegExp(base) + '\\s+Trimmed(?:\\s+(\\d+))?$', 'i');
+    let maxN = 0;
+    for (const r of (recs || [])) {
+      const nm = (r && r.name) ? String(r.name) : '';
+      const m = nm.match(rx);
+      if (m) {
+        const n = parseInt(m[1] || '1', 10);
+        if (n > maxN) maxN = n;
+      }
+    }
+    return `${base} Trimmed ${maxN + 1}`;
+  }
+
+  async function trimAndPersistRecording(source, opts = {}) {
+    const o = Object.assign({}, defaultOptions, opts);
+    const trimmedBlob = await trimLeadingSilence(source, o);
+
+    // obter nome base do DOM (seleção) ou do workspace
+    let baseName = _getSelectedRecordingNameFromDOM();
+    const recs = _getWorkspaceRecordingsSafe();
+    if (!baseName && recs && recs.length > 0) {
+      const last = recs[recs.length - 1];
+      baseName = (last && last.name) ? String(last.name) : null;
+    }
+    if (!baseName) baseName = 'Gravação';
+    const suggestedName = _computeNextTrimmedName(baseName, recs);
+
+    if (typeof window.persistRecording === 'function') {
+      try {
+        const rec = await window.persistRecording(trimmedBlob, suggestedName);
+        return { recordingObj: rec };
+      } catch (err) {
+        console.warn('persistRecording falhou ao salvar trim:', err);
+        return { blob: trimmedBlob, error: err };
+      }
+    } else {
+      return { blob: trimmedBlob };
+    }
+  }
+
+  // ------------------------------
+  // binding do botão trim
+  // ------------------------------
+  async function _onTrimButtonClick() {
+    try {
+      const btn = document.getElementById('trim-audio-btn');
+      if (btn) btn.disabled = true;
+      const audioEl = document.getElementById('audio-player');
+      if (!audioEl || !audioEl.src) { alert('Nenhum áudio carregado para trim.'); if (btn) btn.disabled = false; return; }
+      const src = audioEl.src;
+      const info = await analyzeLeadingSilence(src);
+      const secs = Math.max(0, Math.min(info.silenceEnd || 0, 60));
+      const msg = (secs <= 0) ? 'Nenhum silêncio inicial detectado.' : `Silêncio inicial detectado até ${secs.toFixed(3)}s. Deseja aplicar trim e criar nova gravação?`;
+      if (secs <= 0) {
+        if (!confirm(msg + '\nMesmo assim deseja tentar trim?')) { if (btn) btn.disabled = false; return; }
+      } else {
+        if (!confirm(msg)) { if (btn) btn.disabled = false; return; }
+      }
+
+      const res = await trimAndPersistRecording(src);
+      if (res && res.recordingObj) {
+        alert('Trim aplicado: nova gravação criada.');
+        try { if (res.recordingObj.url) showWaveform(res.recordingObj.url); } catch (_) {}
+      } else if (res && res.blob) {
+        const a = document.createElement('a');
+        a.href = URL.createObjectURL(res.blob);
+        a.download = `trimmed-${Date.now()}.wav`;
+        a.click();
+        alert('Trim aplicado: arquivo gerado para download (não persistido automaticamente).');
+        showWaveform(res.blob);
+      } else {
+        alert('Trim concluído (sem resultado persistido).');
+      }
+    } catch (err) {
+      console.error('Erro no trim:', err);
+      alert('Erro ao aplicar trim. Veja o console.');
+    } finally {
+      const btn = document.getElementById('trim-audio-btn');
+      if (btn) btn.disabled = false;
+    }
+  }
+
+  try {
+    const trimBtn = document.getElementById('trim-audio-btn');
+    if (trimBtn && !trimBtn.__trim_bound) {
+      trimBtn.addEventListener('click', _onTrimButtonClick);
+      trimBtn.__trim_bound = true;
+    }
+  } catch (e) {
+    // silent
+  }
+
+  // ------------------------------
+  // Exports
+  // ------------------------------
+  window.showWaveform = showWaveform;
+  window.drawLiveWaveform = drawLiveWaveform;
+  window.stopLiveWaveform = stopLiveWaveform;
+  window.analyzeLeadingSilence = analyzeLeadingSilence;
+  window.trimLeadingSilence = trimLeadingSilence;
+  window.trimAndPersistRecording = trimAndPersistRecording;
+
+})();

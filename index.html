@@ -60,6 +60,7 @@
           <button id="record-btn" class="control record" title="Gravar" aria-label="Gravar">●</button>
           <button id="stop-btn" class="control" disabled title="Parar" aria-label="Parar">■</button>
           <button id="next-btn" class="control" title="Próxima" aria-label="Próxima">⏭</button>
+          <button id="trim-audio-btn" class="small icon-btn" title="Trim silêncio" aria-label="Trim silêncio">✂️</button>
         </div>
         <div class="player-audio">
           <audio id="audio-player" controls class="player-audio-element"></audio>
@@ -80,6 +81,10 @@
   <script src="db.js"></script>
   <script src="config.js"></script>
   <script src="audio.js"></script>
+
+  <!-- novo: módulo waveform (carregado antes do recorder) -->
+  <script src="waveform.js"></script>
+
   <script src="recorder.js"></script>
   <script src="sessions.js"></script>
 </body>

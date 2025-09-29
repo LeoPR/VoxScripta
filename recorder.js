@@ -1,6 +1,7 @@
-// recorder.js — versão integrada com config.js (usa window.appConfig)
-// Mantive a lógica existente (persistRecording, waveform, sessões) e adicionei logs de telemetria
-// para o espectrograma (quando o worker retornar msg.timings).
+// recorder.js — versão completa (sem implementação inline de waveform).
+// As funções de waveform (showWaveform, drawLiveWaveform, stopLiveWaveform) são esperadas em waveform.js
+// Mantive toda a lógica de gravação, persistência, export/import, spectrogram e handlers.
+// IMPORTANTE: waveform.js deve ser carregado antes deste arquivo (index.html já foi atualizado).
 
 let mediaRecorder;
 let audioChunks = [];
@@ -98,7 +99,16 @@ function playRecording(rec) {
         console.warn('playRecording: reprodução bloqueada ou falhou', err);
       });
       statusText.textContent = `Reproduzindo: ${rec.name || ''}`;
-      if (rec.blob) showWaveform(rec.blob).catch(()=>{});
+      // delegar waveform para waveform.js se disponível
+      try {
+        if (rec.blob && typeof window.showWaveform === 'function') {
+          window.showWaveform(rec.blob);
+        } else if (rec.url && typeof window.showWaveform === 'function') {
+          window.showWaveform(rec.url);
+        }
+      } catch (e) {
+        console.warn('showWaveform delegation failed:', e);
+      }
     }
   } catch (err) {
     console.error('Erro em playRecording:', err);
@@ -181,6 +191,7 @@ function renderSessionsList() {
 // ------------------------------
 function renderRecordingsList(list) {
   const container = document.getElementById('recordings-list');
+  if (!container) return;
   container.innerHTML = '';
   const arr = list || [];
   arr.forEach((rec, idx) => {
@@ -309,7 +320,6 @@ function renderRecordingsList(list) {
         if (e.key === 'Enter') {
           const newVal = input.value;
           title.textContent = newVal;
-          // salvar alterações se necessário (delegado externamente)
           if (typeof saveChangesToSessionRecording === 'function') saveChangesToSessionRecording({ ...rec, name: newVal });
         }
       };
@@ -332,7 +342,6 @@ function renderRecordingsList(list) {
     del.onclick = (ev) => {
       ev.stopPropagation();
       if (!confirm('Apagar gravação?')) return;
-      // usar window.selectedSessionId (evita ReferenceError)
       if (window.selectedSessionId && typeof window.getSessionById === 'function') {
         (async () => {
           try {
@@ -372,7 +381,7 @@ function renderRecordingsList(list) {
 }
 
 // ------------------------------
-// selectRecordingInUI (restaurada) — seleciona, atualiza UI e dispara processamento/reprodução
+// selectRecordingInUI — seleciona, atualiza UI e dispara processamento/reprodução
 // ------------------------------
 function selectRecordingInUI(idx, rec) {
   currentIdx = idx;
@@ -387,10 +396,15 @@ function selectRecordingInUI(idx, rec) {
   }
   renderRecordingsList(recordings);
   if (rec && rec.blob) {
-    showWaveform(rec.blob).catch(()=>{});
+    // waveform delegated to waveform.js
+    if (typeof window.showWaveform === 'function') {
+      try { window.showWaveform(rec.blob); } catch (_) {}
+    }
     processAndPlayBlobDelegator(rec.blob).catch(()=>{});
   } else if (rec && rec.url) {
-    showWaveform(rec.url).catch(()=>{});
+    if (typeof window.showWaveform === 'function') {
+      try { window.showWaveform(rec.url); } catch (_) {}
+    }
     fetch(rec.url).then(r => r.blob()).then(b => processAndPlayBlobDelegator(b)).catch(()=>{});
   }
 }
@@ -399,112 +413,42 @@ function selectRecordingInUI(idx, rec) {
 // selecionar sessão (carrega gravações)
 // ------------------------------
 async function selectSession(id) {
-  // delegado para sessions.js; exposto sempre via window.selectSession
   if (typeof window.selectSession === 'function') {
     return window.selectSession(id);
   }
 }
 
 // ------------------------------
-// Waveform static rendering
+// processAndPlayBlob wrapper: delega para audio.js via window.processAndPlayBlob
 // ------------------------------
-async function showWaveform(source) {
-  try {
-    if (animationId) { cancelAnimationFrame(animationId); animationId = null; }
-    let arrayBuffer;
-    if (source instanceof Blob) {
-      arrayBuffer = await source.arrayBuffer();
-    } else if (typeof source === 'string') {
-      const resp = await fetch(source);
-      arrayBuffer = await resp.arrayBuffer();
-    } else {
-      console.warn('showWaveform: fonte não suportada', source);
-      return;
+async function processAndPlayBlobDelegator(blob) {
+  if (typeof window.processAndPlayBlob === 'function') {
+    try {
+      return await window.processAndPlayBlob(blob);
+    } catch (err) {
+      console.warn('processAndPlayBlob (window) falhou:', err);
+      return null;
     }
-    const aCtx = new (window.AudioContext || window.webkitAudioContext)();
-    const audioBuffer = await aCtx.decodeAudioData(arrayBuffer.slice(0));
-    const samples = audioBuffer.getChannelData(0);
-    drawWaveformFromSamples(samples);
-    aCtx.close().catch(()=>{});
-  } catch (err) {
-    console.error('Erro em showWaveform:', err);
-  }
-}
-
-function drawWaveformFromSamples(samples) {
-  const dpr = window.devicePixelRatio || 1;
-  const container = waveform.parentElement || document.body;
-  const w = Math.min(940, container.clientWidth || 940);
-  const h = parseInt(getComputedStyle(waveform).height, 10) || 180;
-
-  waveform.width = Math.round(w * dpr);
-  waveform.height = Math.round(h * dpr);
-  waveform.style.width = w + 'px';
-  waveform.style.height = h + 'px';
-
-  const ctx = waveform.getContext('2d');
-  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-  ctx.clearRect(0, 0, w, h);
-
-  ctx.fillStyle = '#ffffff';
-  ctx.fillRect(0, 0, w, h);
-
-  ctx.lineWidth = 1;
-  ctx.strokeStyle = '#1976d2';
-  ctx.beginPath();
-
-  const step = Math.max(1, Math.floor(samples.length / w));
-  for (let i = 0; i < w; i++) {
-    const start = i * step;
-    let min = 1.0, max = -1.0;
-    for (let j = 0; j < step && (start + j) < samples.length; j++) {
-      const v = samples[start + j];
-      if (v < min) min = v;
-      if (v > max) max = v;
+  } else {
+    // fallback local (encode + set player) — keep minimal and safe
+    try {
+      const aCtx = new (window.AudioContext || window.webkitAudioContext)();
+      const arrayBuffer = await blob.arrayBuffer();
+      const audioBuffer = await aCtx.decodeAudioData(arrayBuffer);
+      const sampleRate = audioBuffer.sampleRate;
+      const raw = audioBuffer.getChannelData(0);
+      const { processed } = applyAGC(raw, (window.processingOptions && window.processingOptions.agc && window.processingOptions.agc.targetRMS) || 0.08, (window.processingOptions && window.processingOptions.agc && window.processingOptions.agc.maxGain) || 8, (window.processingOptions && window.processingOptions.agc && window.processingOptions.agc.limiterThreshold) || 0.99);
+      const wavBlob = encodeWAV(processed, sampleRate);
+      const url = URL.createObjectURL(wavBlob);
+      audioPlayer.src = url;
+      audioPlayer.load();
+      aCtx.close().catch(()=>{});
+      return { url, gain: 1 };
+    } catch (err) {
+      console.error('processAndPlayBlob fallback falhou:', err);
+      return null;
     }
-    const y1 = (1 - (min + 1) / 2) * h;
-    const y2 = (1 - (max + 1) / 2) * h;
-    ctx.moveTo(i + 0.5, y1);
-    ctx.lineTo(i + 0.5, y2);
   }
-  ctx.stroke();
-}
-
-// ------------------------------
-// Live waveform drawing
-// ------------------------------
-function drawLiveWaveform() {
-  if (!analyser) return;
-  const bufferLength = analyser.fftSize;
-  const dataArray = new Uint8Array(bufferLength);
-  const dpr = window.devicePixelRatio || 1;
-  const container = waveform.parentElement || document.body;
-  const w = Math.min(940, container.clientWidth || 940);
-  const h = parseInt(getComputedStyle(waveform).height, 10) || 180;
-  waveform.width = Math.round(w * dpr);
-  waveform.height = Math.round(h * dpr);
-  waveform.style.width = w + 'px';
-  waveform.style.height = h + 'px';
-  const ctx = waveform.getContext('2d');
-  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-  function draw() {
-    analyser.getByteTimeDomainData(dataArray);
-    ctx.clearRect(0, 0, w, h);
-    ctx.beginPath();
-    for (let i = 0; i < w; i++) {
-      const idx = Math.floor(i * bufferLength / w);
-      const v = dataArray[idx] / 128.0;
-      const y = (v * 0.5) * h;
-      const drawY = h / 2 + (y - h / 4);
-      if (i === 0) ctx.moveTo(i, drawY);
-      else ctx.lineTo(i, drawY);
-    }
-    ctx.strokeStyle = "#1976d2";
-    ctx.lineWidth = 2;
-    ctx.stroke();
-    animationId = requestAnimationFrame(draw);
-  }
-  draw();
 }
 
 // ------------------------------
@@ -574,36 +518,6 @@ function encodeWAV(samples, sampleRate) {
   return new Blob([buffer], { type: 'audio/wav' });
 }
 
-// processAndPlayBlob wrapper: delega para audio.js via window quando disponível
-async function processAndPlayBlobDelegator(blob) {
-  if (typeof window.processAndPlayBlob === 'function') {
-    try {
-      return await window.processAndPlayBlob(blob);
-    } catch (err) {
-      console.warn('processAndPlayBlob (window) falhou:', err);
-      return null;
-    }
-  } else {
-    try {
-      const aCtx = new (window.AudioContext || window.webkitAudioContext)();
-      const arrayBuffer = await blob.arrayBuffer();
-      const audioBuffer = await aCtx.decodeAudioData(arrayBuffer);
-      const sampleRate = audioBuffer.sampleRate;
-      const raw = audioBuffer.getChannelData(0);
-      const { processed } = applyAGC(raw, window.processingOptions.agc.targetRMS, window.processingOptions.agc.maxGain, window.processingOptions.agc.limiterThreshold);
-      const wavBlob = encodeWAV(processed, sampleRate);
-      const url = URL.createObjectURL(wavBlob);
-      audioPlayer.src = url;
-      audioPlayer.load();
-      aCtx.close().catch(()=>{});
-      return { url, gain: 1 };
-    } catch (err) {
-      console.error('processAndPlayBlob fallback falhou:', err);
-      return null;
-    }
-  }
-}
-
 // ------------------------------
 // Spectrogram drawing + processing indicator
 // ------------------------------
@@ -643,7 +557,6 @@ function drawSpectrogramPixels(srcWidth, srcHeight, pixels) {
   const ctx = spectrogramCanvas.getContext('2d');
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 
-  // usar config para image smoothing (você preferiu false)
   const smoothing = (cfg.ui && cfg.ui.imageSmoothingEnabled !== undefined) ? cfg.ui.imageSmoothingEnabled : ((cfg.waveform && cfg.waveform.imageSmoothing) || false);
   ctx.imageSmoothingEnabled = !!smoothing;
   ctx.imageSmoothingQuality = 'high';
@@ -670,10 +583,10 @@ window.onSelectRecording = function(idx) {
   }
   statusText.textContent = `Selecionado: ${formatDate24(rec.date)}`;
   if (rec && rec.blob) {
-    showWaveform(rec.blob).catch(()=>{});
+    if (typeof window.showWaveform === 'function') window.showWaveform(rec.blob).catch(()=>{});
     processAndPlayBlobDelegator(rec.blob).catch(()=>{});
   } else if (rec && rec.url) {
-    showWaveform(rec.url).catch(()=>{});
+    if (typeof window.showWaveform === 'function') window.showWaveform(rec.url).catch(()=>{});
     try {
       fetch(rec.url).then(r => r.blob()).then(b => processAndPlayBlobDelegator(b)).catch(()=>{});
     } catch (e) { /* ignore */ }
@@ -682,16 +595,20 @@ window.onSelectRecording = function(idx) {
 };
 
 // navigation
-prevBtn.addEventListener('click', () => {
-  if (recordings.length === 0) return;
-  const next = currentIdx <= 0 ? 0 : currentIdx - 1;
-  window.onSelectRecording(next);
-});
-nextBtn.addEventListener('click', () => {
-  if (recordings.length === 0) return;
-  const next = currentIdx >= recordings.length - 1 ? recordings.length - 1 : (currentIdx === -1 ? recordings.length - 1 : currentIdx + 1);
-  window.onSelectRecording(next);
-});
+try {
+  prevBtn.addEventListener('click', () => {
+    if (recordings.length === 0) return;
+    const next = currentIdx <= 0 ? 0 : currentIdx - 1;
+    window.onSelectRecording(next);
+  });
+} catch(_) {}
+try {
+  nextBtn.addEventListener('click', () => {
+    if (recordings.length === 0) return;
+    const next = currentIdx >= recordings.length - 1 ? recordings.length - 1 : (currentIdx === -1 ? recordings.length - 1 : currentIdx + 1);
+    window.onSelectRecording(next);
+  });
+} catch(_) {}
 
 // ------------------------------
 // NOVO: Importar gravação (arquivo de áudio) via #import-recording-input
@@ -705,7 +622,6 @@ if (importRecordingInput && !importRecordingInput.__rec_import_bound) {
       const baseName = file.name ? file.name.replace(/\.[^/.]+$/, '') : '';
       const suggestedName = baseName || `Gravação ${recordings.length + 1}`;
       const rec = await persistRecording(file, suggestedName);
-      // Selecionar e processar a gravação recém-importada
       let idx = recordings.findIndex(r => r && r.id === rec.id);
       if (idx < 0) idx = recordings.length - 1;
       selectRecordingInUI(idx, recordings[idx] || rec);
@@ -731,10 +647,8 @@ if (recordBtn && !recordBtn.__recorder_click_bound) {
       recordBtn.disabled = true;
       stopBtn.disabled = false;
 
-      // Solicita microfone
       liveStream = await navigator.mediaDevices.getUserMedia({ audio: true });
 
-      // Áudio ao vivo + preview waveform
       audioCtx = new (window.AudioContext || window.webkitAudioContext)();
       try { await audioCtx.resume(); } catch (_) {}
       sourceNode = audioCtx.createMediaStreamSource(liveStream);
@@ -742,9 +656,16 @@ if (recordBtn && !recordBtn.__recorder_click_bound) {
       analyser.fftSize = 512;
       analyser.smoothingTimeConstant = 0.3;
       sourceNode.connect(analyser);
-      drawLiveWaveform();
 
-      // Gravação
+      // delegar desenho ao waveform.js se disponível
+      try {
+        if (typeof window.drawLiveWaveform === 'function') {
+          window.drawLiveWaveform(analyser);
+        }
+      } catch (e) {
+        console.warn('drawLiveWaveform delegation failed:', e);
+      }
+
       mediaRecorder = new MediaRecorder(liveStream);
       audioChunks = [];
       mediaRecorder.ondataavailable = (e) => { if (e.data && e.data.size) audioChunks.push(e.data); };
@@ -769,6 +690,8 @@ if (recordBtn && !recordBtn.__recorder_click_bound) {
             try { liveStream.getTracks().forEach(t => t.stop()); } catch(_) {}
             liveStream = null;
           }
+          // parar desenho live (delegado)
+          try { if (typeof window.stopLiveWaveform === 'function') window.stopLiveWaveform(); } catch(_) {}
           if (animationId) { cancelAnimationFrame(animationId); animationId = null; }
         }
       };
@@ -783,7 +706,6 @@ if (recordBtn && !recordBtn.__recorder_click_bound) {
       statusText.textContent = 'Erro ao iniciar gravação.';
       recordBtn.disabled = false;
       stopBtn.disabled = true;
-      // limpeza defensiva
       try { if (liveStream) { liveStream.getTracks().forEach(t => t.stop()); liveStream = null; } } catch(_){}
       try { if (audioCtx) { audioCtx.close().catch(()=>{}); audioCtx = null; } } catch(_){}
     }
@@ -831,15 +753,12 @@ async function loadSessionsSafe() {
 // ------------------------------
 (function init() {
   try {
-    // open DB non-blocking
     if (typeof window.openDb === 'function') {
       window.openDb().catch(err => console.warn('openDb falhou no init (não bloqueante):', err));
     }
-    // register worker.onmessage if audio.js exposes ensureWorker
     if (typeof window.ensureWorker === 'function') {
       window.ensureWorker().then(worker => {
         if (!worker) return;
-        // evitar múltiplos registros
         if (worker.__registeredForRecorder) return;
         worker.__registeredForRecorder = true;
         worker.onmessage = (ev) => {
@@ -853,7 +772,6 @@ async function loadSessionsSafe() {
               const pixels = new Uint8ClampedArray(msg.pixels);
               drawSpectrogramPixels(msg.width, msg.height, pixels);
               showProcessing(false, 100);
-              // telemetria: mostrar timings se disponíveis
               if (msg.timings && window.appConfig && window.appConfig.telemetry && window.appConfig.telemetry.enabled) {
                 if (window.appConfig.telemetry.sendToConsole) {
                   console.log('[spectrogram.metrics]', msg.timings);
@@ -871,7 +789,6 @@ async function loadSessionsSafe() {
         console.warn('ensureWorker falhou no init:', err);
       });
     }
-    // Carregar sessões: preferir a função de sessions.js; se não houver, usar fallback local.
     if (typeof window.loadSessions === 'function') {
       window.loadSessions().catch(err => console.warn('loadSessions (sessions.js) no init falhou (não bloqueante):', err));
     } else {
