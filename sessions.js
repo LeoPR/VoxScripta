@@ -49,7 +49,7 @@ function renderSessionsList() {
     // tooltip com nome + data completa
     item.title = `${s.name || ''}\n${formatDate24(s.date)}`;
 
-    // Left area: título (uma linha truncada) + meta (data, sempre visível em duas linhas)
+    // Left area: título (uma linha truncada) + meta (data, sempre visível)
     const left = document.createElement('div');
     left.style.display = 'flex';
     left.style.flexDirection = 'column';
@@ -77,6 +77,60 @@ function renderSessionsList() {
     right.style.display = 'flex';
     right.style.gap = '6px';
     right.style.alignItems = 'center';
+
+    // === EDIT button (adicionado): renomear sessão (ação mínima) ===
+    const editBtn = document.createElement('button');
+    editBtn.className = 'small';
+    editBtn.textContent = 'Editar';
+    editBtn.onclick = async (ev) => {
+      ev.stopPropagation();
+      try {
+        const currentName = s.name || `Sessão ${index + 1}`;
+        const newName = prompt('Renomear sessão:', currentName);
+        if (newName === null) return; // usuário cancelou
+        const trimmed = String(newName).trim();
+        if (!trimmed) {
+          alert('Nome inválido.');
+          return;
+        }
+        if (trimmed === currentName) {
+          // sem alterações
+          return;
+        }
+        // obter sessão atual do DB para garantir consistência
+        let sessObj = null;
+        if (typeof window.getSessionById === 'function') {
+          try {
+            sessObj = await window.getSessionById(s.id);
+          } catch (e) {
+            console.warn('getSessionById falhou durante renomeação:', e);
+          }
+        } else {
+          try {
+            sessObj = await getSessionById(s.id);
+          } catch (e) {
+            console.warn('getSessionById (fallback) falhou durante renomeação:', e);
+          }
+        }
+        if (!sessObj) {
+          alert('Sessão não encontrada no banco. Atualize a lista e tente novamente.');
+          return;
+        }
+        sessObj.name = trimmed;
+        // persistir alteração
+        if (typeof window.updateSessionInDb === 'function') {
+          await window.updateSessionInDb(sessObj);
+        } else {
+          await updateSessionInDb(sessObj);
+        }
+        // recarregar a lista para refletir a mudança
+        await loadSessions();
+      } catch (err) {
+        console.error('Erro ao renomear sessão:', err);
+        alert('Erro ao renomear sessão. Veja o console para mais detalhes.');
+      }
+    };
+    right.appendChild(editBtn);
 
     const expBtn = document.createElement('button');
     expBtn.className = 'small';
