@@ -189,16 +189,27 @@ function renderRecordingsList(list) {
     // title para hover-preview com data 24h
     item.title = `${rec.name || ''}\n${formatDate24(rec.date)}`;
 
-    const nameWrap = document.createElement('div');
-    nameWrap.style.display = 'flex';
-    nameWrap.style.alignItems = 'center';
-    nameWrap.style.gap = '8px';
-    nameWrap.style.flex = '1';
+    // Left: título (linha 1) + meta (linha 2 pequena)
+    const left = document.createElement('div');
+    left.style.display = 'flex';
+    left.style.flexDirection = 'column';
+    left.style.flex = '1 1 auto';
+    left.style.minWidth = '0'; // permite truncamento do título
 
-    const name = document.createElement('div');
-    name.className = 'recording-name';
-    name.textContent = rec.name || `Gravação ${idx+1}`;
-    nameWrap.appendChild(name);
+    // título com badge(s) inline
+    const titleRow = document.createElement('div');
+    titleRow.style.display = 'flex';
+    titleRow.style.alignItems = 'center';
+    titleRow.style.gap = '8px';
+    titleRow.style.minWidth = '0';
+
+    const title = document.createElement('div');
+    title.className = 'recording-name';
+    title.textContent = rec.name || `Gravação ${idx+1}`;
+    title.style.overflow = 'hidden';
+    title.style.textOverflow = 'ellipsis';
+    title.style.whiteSpace = 'nowrap';
+    titleRow.appendChild(title);
 
     if (rec.persisted) {
       const badge = document.createElement('span');
@@ -206,23 +217,26 @@ function renderRecordingsList(list) {
       badge.style.color = 'green';
       badge.title = 'Gravação persistida no banco';
       badge.textContent = '✓';
-      nameWrap.appendChild(badge);
+      titleRow.appendChild(badge);
     } else if (typeof rec.id === 'string' && rec.id && rec.id.startsWith('TEMP__')) {
       const tempBadge = document.createElement('span');
       tempBadge.style.fontSize = '12px';
       tempBadge.style.color = '#999';
       tempBadge.title = 'Ainda não persistido';
       tempBadge.textContent = '•';
-      nameWrap.appendChild(tempBadge);
+      titleRow.appendChild(tempBadge);
     }
 
-    item.appendChild(nameWrap);
+    left.appendChild(titleRow);
 
     const meta = document.createElement('div');
     meta.className = 'recording-meta';
     meta.textContent = formatDate24(rec.date);
-    item.appendChild(meta);
+    left.appendChild(meta);
 
+    item.appendChild(left);
+
+    // Right: ações (play, export, rename, delete)
     const play = document.createElement('button');
     play.className = 'play-btn';
     play.textContent = '▶';
@@ -279,19 +293,22 @@ function renderRecordingsList(list) {
       ev.stopPropagation();
       const input = document.createElement('input');
       input.type = 'text';
-      input.value = rec.name || '';
+      input.value = title.textContent || '';
       input.onkeydown = (e) => {
         if (e.key === 'Enter') {
-          rec.name = input.value;
-          if (typeof saveChangesToSessionRecording === 'function') saveChangesToSessionRecording(rec);
+          const newVal = input.value;
+          title.textContent = newVal;
+          // salvar alterações se necessário (delegado externamente)
+          if (typeof saveChangesToSessionRecording === 'function') saveChangesToSessionRecording({ ...rec, name: newVal });
         }
       };
       input.onblur = () => {
-        rec.name = input.value;
-        if (typeof saveChangesToSessionRecording === 'function') saveChangesToSessionRecording(rec);
+        const newVal = input.value;
+        title.textContent = newVal;
+        if (typeof saveChangesToSessionRecording === 'function') saveChangesToSessionRecording({ ...rec, name: newVal });
       };
-      name.innerHTML = '';
-      name.appendChild(input);
+      title.innerHTML = '';
+      title.appendChild(input);
       input.focus();
     };
     item.appendChild(rename);

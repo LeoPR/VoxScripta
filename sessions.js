@@ -78,10 +78,12 @@ function renderSessionsList() {
     right.style.gap = '6px';
     right.style.alignItems = 'center';
 
-    // === EDIT button (adicionado): renomear sessão (ação mínima) ===
+    // === EDIT button (ícone) ===
     const editBtn = document.createElement('button');
-    editBtn.className = 'small';
-    editBtn.textContent = 'Editar';
+    editBtn.className = 'rename-btn';
+    editBtn.innerHTML = '✏️';
+    editBtn.title = 'Editar sessão';
+    editBtn.setAttribute('aria-label', 'Editar sessão');
     editBtn.onclick = async (ev) => {
       ev.stopPropagation();
       try {
@@ -132,9 +134,12 @@ function renderSessionsList() {
     };
     right.appendChild(editBtn);
 
+    // === EXPORT button (ícone) ===
     const expBtn = document.createElement('button');
     expBtn.className = 'small';
-    expBtn.textContent = 'Exportar';
+    expBtn.innerHTML = '⤓';
+    expBtn.title = 'Exportar sessão';
+    expBtn.setAttribute('aria-label', 'Exportar sessão');
     expBtn.onclick = async (ev) => {
       ev.stopPropagation();
       if (typeof window.exportSessionById === 'function') {
@@ -145,9 +150,12 @@ function renderSessionsList() {
     };
     right.appendChild(expBtn);
 
+    // === DELETE button (ícone) ===
     const del = document.createElement('button');
-    del.className = 'small';
-    del.textContent = 'Apagar';
+    del.className = 'delete-btn';
+    del.innerHTML = '🗑️';
+    del.title = 'Apagar sessão';
+    del.setAttribute('aria-label', 'Apagar sessão');
     del.onclick = async (ev) => {
       ev.stopPropagation();
       if (!confirm('Apagar sessão "' + (s.name || '') + '"?')) return;
