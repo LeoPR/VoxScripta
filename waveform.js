@@ -11,12 +11,23 @@
 (function () {
   'use strict';
 
-  const defaultOptions = {
-    threshold: 0.01,       // limiar RMS para considerar som (ajuste conforme necessário)
-    chunkSizeMs: 10,       // janela em ms para calcular RMS
-    minNonSilenceMs: 50,   // tempo mínimo consecutivo > threshold para considerar som válido
-    outputMime: 'audio/wav'// formato de saída ao gerar Blob (WAV)
+  // Fallback local (defaults), mas o caminho preferido é via appConfig.trim (config.js)
+  const defaultTrimOptions = {
+    threshold: 0.01,
+    chunkSizeMs: 10,
+    minNonSilenceMs: 50,
+    safetyPaddingMs: 10
   };
+
+  function _getTrimOptions() {
+    try {
+      if (window.appConfig && typeof window.appConfig.getMergedProcessingOptions === 'function') {
+        const merged = window.appConfig.getMergedProcessingOptions();
+        if (merged && merged.trim) return Object.assign({}, defaultTrimOptions, merged.trim);
+      }
+    } catch(_) {}
+    return defaultTrimOptions;
+  }
 
   // ------------------------------
   // Helpers: decode url/blob -> AudioBuffer
@@ -43,8 +54,7 @@
   }
 
   // ------------------------------
-  // drawWaveformFromSamples (versão do recorder.js)
-  // samples: Float32Array (canal 0)
+  // drawWaveformFromSamples
   // ------------------------------
   function drawWaveformFromSamples(samples) {
     const waveform = document.getElementById('waveform');
@@ -89,7 +99,6 @@
 
   // ------------------------------
   // showWaveform (decodifica e desenha)
-  // aceita Blob ou URL string
   // ------------------------------
   async function showWaveform(source) {
     const waveform = document.getElementById('waveform');
@@ -125,7 +134,7 @@
   }
 
   // ------------------------------
-  // Live waveform drawing (recebe um AnalyserNode)
+  // Live waveform drawing
   // ------------------------------
   let _liveAnimationId = null;
   function drawLiveWaveform(analyser) {
@@ -190,46 +199,48 @@
   }
 
   async function analyzeLeadingSilence(source, opts = {}) {
-    const o = Object.assign({}, defaultOptions, opts);
+    const opt = Object.assign({}, defaultTrimOptions, _getTrimOptions(), opts);
     const audioBuffer = await _decodeToAudioBuffer(source);
     const sampleRate = audioBuffer.sampleRate;
     const channelData = audioBuffer.numberOfChannels ? audioBuffer.getChannelData(0) : null;
     if (!channelData) return { silenceEnd: 0, sampleRate, samples: 0 };
 
-    const chunkSize = Math.max(1, Math.floor((o.chunkSizeMs / 1000) * sampleRate));
-    const minNonSilenceChunks = Math.max(1, Math.floor((o.minNonSilenceMs / o.chunkSizeMs)));
-    let silenceChunks = 0;
-    let found = false;
+    const chunkSize = Math.max(1, Math.floor((opt.chunkSizeMs / 1000) * sampleRate));
+    const minNonSilenceChunks = Math.max(1, Math.floor(opt.minNonSilenceMs / opt.chunkSizeMs));
+
     let silenceEndSample = 0;
+    let found = false;
 
     const totalChunks = Math.ceil(channelData.length / chunkSize);
+
     for (let ci = 0; ci < totalChunks; ci++) {
       const start = ci * chunkSize;
       const len = Math.min(chunkSize, channelData.length - start);
       const rms = _rms(channelData, start, len);
-      if (rms <= o.threshold) {
-        silenceChunks++;
-      } else {
+
+      if (rms > opt.threshold) {
+        // Confirmar que há minNonSilenceChunks consecutivos acima do threshold
         let ok = true;
-        for (let look = 0; look < minNonSilenceChunks; look++) {
+        for (let look = 1; look <= minNonSilenceChunks - 1; look++) {
           const idx = ci + look;
-          if (idx >= totalChunks) { ok = true; break; }
+          if (idx >= totalChunks) break;
           const s2 = idx * chunkSize;
           const l2 = Math.min(chunkSize, channelData.length - s2);
           const rms2 = _rms(channelData, s2, l2);
-          if (rms2 <= o.threshold) { ok = false; break; }
+          if (rms2 <= opt.threshold) { ok = false; break; }
         }
         if (ok) {
-          silenceEndSample = Math.max(0, ci * chunkSize - silenceChunks * chunkSize);
+          // Fim do silêncio = início deste frame não-silencioso (com padding de segurança)
+          const pad = Math.max(0, Math.floor((opt.safetyPaddingMs / 1000) * sampleRate));
+          silenceEndSample = Math.max(0, (ci * chunkSize) - pad);
           found = true;
           break;
-        } else {
-          silenceChunks = 0;
         }
       }
     }
 
     if (!found) {
+      // Não encontrou voz -> silêncio ocupa tudo
       return { silenceEnd: audioBuffer.duration, sampleRate, samples: channelData.length };
     }
 
@@ -237,13 +248,13 @@
     return { silenceEnd, sampleRate, samples: channelData.length };
   }
 
-  // NOTE: encoding removed from waveform.js — use audio.js encodeWAV implementation (window.encodeWAV)
+  // NOTE: encoding removed from waveform.js — usa audio.js (window.encodeWAV)
   async function trimLeadingSilence(source, opts = {}) {
-    const o = Object.assign({}, defaultOptions, opts);
+    const opt = Object.assign({}, defaultTrimOptions, _getTrimOptions(), opts);
     const audioBuffer = await _decodeToAudioBuffer(source);
     if (!audioBuffer) throw new Error('Falha ao decodificar áudio');
 
-    const analysis = await analyzeLeadingSilence(source, o);
+    const analysis = await analyzeLeadingSilence(source, opt);
     let startSec = analysis.silenceEnd || 0;
     if (startSec >= audioBuffer.duration) {
       const empty = new Float32Array(0);
@@ -251,7 +262,7 @@
     }
 
     const startSample = Math.floor(startSec * audioBuffer.sampleRate);
-    const remaining = audioBuffer.length - startSample;
+    const remaining = Math.max(0, audioBuffer.length - startSample);
     const out = new Float32Array(remaining);
     const ch0 = audioBuffer.getChannelData(0);
     for (let i = 0; i < remaining; i++) {
@@ -299,8 +310,8 @@
   }
 
   async function trimAndPersistRecording(source, opts = {}) {
-    const o = Object.assign({}, defaultOptions, opts);
-    const trimmedBlob = await trimLeadingSilence(source, o);
+    const opt = Object.assign({}, defaultTrimOptions, _getTrimOptions(), opts);
+    const trimmedBlob = await trimLeadingSilence(source, opt);
 
     // obter nome base do DOM (seleção) ou do workspace
     let baseName = _getSelectedRecordingNameFromDOM();
@@ -313,13 +324,8 @@
     const suggestedName = _computeNextTrimmedName(baseName, recs);
 
     if (typeof window.persistRecording === 'function') {
-      try {
-        const rec = await window.persistRecording(trimmedBlob, suggestedName);
-        return { recordingObj: rec };
-      } catch (err) {
-        console.warn('persistRecording falhou ao salvar trim:', err);
-        return { blob: trimmedBlob, error: err };
-      }
+      const rec = await window.persistRecording(trimmedBlob, suggestedName);
+      return { recordingObj: rec };
     } else {
       return { blob: trimmedBlob };
     }
@@ -329,19 +335,19 @@
   // binding do botão trim
   // ------------------------------
   async function _onTrimButtonClick() {
+    const btn = document.getElementById('trim-audio-btn');
+    if (btn) btn.disabled = true;
     try {
-      const btn = document.getElementById('trim-audio-btn');
-      if (btn) btn.disabled = true;
       const audioEl = document.getElementById('audio-player');
-      if (!audioEl || !audioEl.src) { alert('Nenhum áudio carregado para trim.'); if (btn) btn.disabled = false; return; }
+      if (!audioEl || !audioEl.src) { alert('Nenhum áudio carregado para trim.'); return; }
       const src = audioEl.src;
       const info = await analyzeLeadingSilence(src);
       const secs = Math.max(0, Math.min(info.silenceEnd || 0, 60));
       const msg = (secs <= 0) ? 'Nenhum silêncio inicial detectado.' : `Silêncio inicial detectado até ${secs.toFixed(3)}s. Deseja aplicar trim e criar nova gravação?`;
       if (secs <= 0) {
-        if (!confirm(msg + '\nMesmo assim deseja tentar trim?')) { if (btn) btn.disabled = false; return; }
+        if (!confirm(msg + '\nMesmo assim deseja tentar trim?')) return;
       } else {
-        if (!confirm(msg)) { if (btn) btn.disabled = false; return; }
+        if (!confirm(msg)) return;
       }
 
       const res = await trimAndPersistRecording(src);
@@ -359,10 +365,9 @@
         alert('Trim concluído (sem resultado persistido).');
       }
     } catch (err) {
-      console.error('Erro no trim:', err);
+      console.error('Erro ao aplicar trim:', err);
       alert('Erro ao aplicar trim. Veja o console.');
     } finally {
-      const btn = document.getElementById('trim-audio-btn');
       if (btn) btn.disabled = false;
     }
   }

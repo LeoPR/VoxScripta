@@ -35,6 +35,18 @@
     imageSmoothing: false
   };
 
+  // Trim de silêncio (centralizado)
+  // threshold: limiar RMS por chunk
+  // chunkSizeMs: duração do chunk para medição de RMS
+  // minNonSilenceMs: janelinha de confirmação de som após o silêncio
+  // safetyPaddingMs: "sobra" de silêncio que mantemos antes do primeiro som para não cortar ataque
+  window.appConfig.trim = {
+    threshold: 0.01,
+    chunkSizeMs: 10,
+    minNonSilenceMs: 50,
+    safetyPaddingMs: 10
+  };
+
   // Gravação / MediaRecorder defaults
   window.appConfig.recording = {
     mimeType: 'audio/webm',
@@ -60,6 +72,7 @@
       agc: Object.assign({}, window.appConfig.agc, proc.agc || {}),
       spectrogram: Object.assign({}, window.appConfig.spectrogram, proc.spectrogram || {}),
       waveform: Object.assign({}, window.appConfig.waveform, proc.waveform || {}),
+      trim: Object.assign({}, window.appConfig.trim, proc.trim || {}),
       ui: Object.assign({}, window.appConfig.ui, proc.ui || {}),
       recording: Object.assign({}, window.appConfig.recording, proc.recording || {}),
       telemetry: Object.assign({}, window.appConfig.telemetry, proc.telemetry || {})

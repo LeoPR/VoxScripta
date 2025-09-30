@@ -2,59 +2,125 @@
 
 VoxScripta é um projeto acadêmico simples de captura de áudio, visualização (waveform + espectrograma) e organização em sessões, feito com HTML + JavaScript puro (sem frameworks pesados).
 
-O foco principal é ser didático, leve e fácil de modificar, incluindo:
+Principais recursos:
 - Gravação via MediaRecorder
 - Processamento básico (AGC, fade-in curto)
 - Visualização de waveform e espectrograma (Mel) via Web Worker
+- Trim de silêncio inicial (configurável via config.js)
 - Persistência local em IndexedDB (gravações e sessões por referência)
 - Importação e exportação de sessões (JSON)
+- Backup geral (exporta/importa todas as gravações e sessões)
 - Importação de arquivos de áudio avulsos
 
 ---
 
-## Demonstração rápida
+## Como usar (demonstração rápida)
 
 - Clique no botão ● para gravar.
 - Clique ■ para parar e a gravação aparece na lista (painel esquerdo).
 - Selecione uma gravação para reproduzir e visualizar waveform + espectrograma.
-- Clique “Salvar sessão” para gravar o conjunto atual de gravações como uma sessão persistente (IndexedDB).
-- Você pode exportar/impotar sessões (JSON) e importar um arquivo de áudio externo.
+- Para aplicar trim de silêncio inicial, selecione a gravação e clique em ✂️; confirme para criar uma nova gravação trimada.
+- Clique “Salvar sessão” para gravar o conjunto atual de gravações como uma sessão (IndexedDB).
+- Exporte/importe sessões (JSON) e faça backup geral (gravações + sessões).
 
 ---
 
 ## Arquitetura (arquivos principais)
 
 - index.html
-  - Estrutura da página e botões (gravação, navegação, salvar/exportar/importar sessão, importar áudio).
+  - Estrutura da página e botões (gravação, navegação, salvar/exportar/importar sessão, importar áudio, backup geral).
 - style.css
-  - Estilos do layout, painel lateral e componentes.
-- recorder.js
-  - Controla a gravação, waveform ao vivo, reprodução, e mantém o “workspace” de gravações em memória.
-  - Expõe uma API mínima para o módulo de sessões (get/set/append do workspace).
-  - Registra o listener do worker para desenhar o espectrograma (mensagens do worker).
-- sessions.js
-  - Responsável por listar sessões, salvar sessão atual, exportar/importar sessão, selecionar sessão.
-  - Interage com recorder.js através da API mínima de workspace.
+  - Estilos do layout, painel lateral e componentes (sem estilos inline; melhorias de acessibilidade).
+- config.js
+  - Fonte única de configurações (AGC, espectrograma, waveform, trim, gravação, UI, telemetria).
+  - Função getMergedProcessingOptions() para mesclar com window.processingOptions (compatibilidade).
 - audio.js
-  - Utilitários de áudio (AGC, fade-in, encoder WAV) e criação do worker (ensureWorker).
-  - processAndPlayBlob: decodifica, aplica AGC/fade-in e envia os dados para o worker gerar o espectrograma.
+  - Utilitários de áudio (AGC, fade-in, encoder WAV unificado) e criação do worker (ensureWorker).
+  - processAndPlayBlob: decodifica, aplica AGC/fade-in e envia para o worker gerar o espectrograma.
 - spectrogram.worker.js
   - Worker com FFT e pipeline para gerar espectrograma em escala Mel e retornar os pixels prontos ao UI.
+- waveform.js
+  - Desenho da waveform (estático e ao vivo).
+  - Trim de silêncio inicial: análise + recorte usando encodeWAV de audio.js.
+  - Agora utiliza as configurações centralizadas em config.js (appConfig.trim).
+- recorder.js
+  - Controla a gravação, reprodução, e mantém o “workspace” de gravações em memória.
+  - Delegação para waveform.js (desenho live/estático) e integração com o worker (mensagens tratadas aqui).
+  - Persistência de gravações (IndexedDB) e ações da lista.
+- sessions.js
+  - Lista, salva, exporta e importa sessões.
+  - Backup geral (exporta/importa todas as gravações e sessões).
 - db.js
-  - IndexedDB v2: stores “recordings” (pool de blobs) e “sessions” (com IDs das gravações).
-  - Migração em runtime do schema antigo (sessões com blobs embutidos) para referenciar por IDs.
-- spectrogram.js (opcional/legado)
-  - Gera espectrograma sem worker (sincrônico) e desenha direto no canvas.
-  - Hoje o fluxo principal usa o worker de audio.js; este arquivo pode ser removido futuramente.
-- history.js (legado)
-  - Renderização de uma barra de histórico antiga (#history-bar). Não é utilizada pelo index atual.
+  - IndexedDB v2: stores recordings (blobs) e sessions (referenciam gravações por ID).
+  - Migração em runtime do schema antigo (sessões com blobs embutidos).
+
+Arquivos legados (podem ser removidos se não usados):
+- spectrogram.js (espectrograma síncrono, sem worker)
+- history.js (UI de histórico antiga)
+
+---
+
+## Configurações (config.js)
+
+As principais opções ficam em `window.appConfig` e podem ser mescladas por `getMergedProcessingOptions()` com `window.processingOptions` (para compatibilidade).
+
+- AGC (`appConfig.agc`)
+  - targetRMS, maxGain, limiterThreshold, fadeMs
+
+- Espectrograma (`appConfig.spectrogram`)
+  - fftSize, hopSize, nMels, windowType, colormap, logScale, dynamicRange, fmin, fmax
+  - preserveNativeResolution, outputScale
+
+- Waveform (`appConfig.waveform`)
+  - visualHeight, samplesPerPixel, imageSmoothing
+
+- Trim de silêncio (`appConfig.trim`) [NOVO, centralizado]
+  - threshold: limiar RMS por chunk (padrão 0.01)
+  - chunkSizeMs: duração do chunk (padrão 10 ms)
+  - minNonSilenceMs: quantidade mínima de “som contínuo” após o silêncio para confirmar início da voz (padrão 50 ms)
+  - safetyPaddingMs: “sobrinha” de silêncio mantida antes do primeiro som para não cortar o ataque (padrão 10 ms)
+
+Exemplo (no DevTools, antes de gravar/trimar):
+```js
+window.processingOptions = window.processingOptions || {};
+window.processingOptions.trim = Object.assign({}, window.processingOptions.trim, {
+  threshold: 0.008,
+  chunkSizeMs: 10,
+  minNonSilenceMs: 60,
+  safetyPaddingMs: 15
+});
+```
+
+---
+
+## Qualidade do espectrograma
+
+Se a imagem parecer “pixelada”:
+- Aumente `nMels` (ex.: 128) para mais resolução vertical.
+- Use `preserveNativeResolution: true` para 1 coluna por frame.
+- `outputScale: 2` para supersampling no worker e downscale suave no UI.
+- Ajuste `imageSmoothingEnabled` (UI) conforme preferência.
+
+Cuidado: valores altos aumentam custo de CPU/memória.
+
+---
+
+## Sobre o Trim de silêncio
+
+- A análise percorre o áudio em chunks (`chunkSizeMs`) medindo RMS e considera silêncio quando ≤ `threshold`.
+- Quando encontra um chunk acima do limiar e confirma os próximos `minNonSilenceMs` (como “voz contínua”), marca o fim do silêncio no início desse chunk (aplicando `safetyPaddingMs` para não cortar o ataque).
+- Correção aplicada: para silêncios longos, a marcação do fim do silêncio agora é feita no início do primeiro trecho não-silencioso confirmado, evitando falhas em que o recorte não acontecia.
+
+Se o trim parecer conservador ou agressivo:
+- Ajuste `threshold` (mais baixo = mais sensível; mais alto = considera mais coisas como som).
+- Ajuste `minNonSilenceMs` (aumente para evitar “sparks”; reduza para acelerar início).
+- Ajuste `safetyPaddingMs` (aumente para preservar mais do início do som).
 
 ---
 
 ## Como rodar localmente
 
-Por questões de permissões de microfone, sirva via HTTP:
-
+Sirva via HTTP (permite microfone):
 - Node:
   ```bash
   npx http-server -p 8080
@@ -66,87 +132,19 @@ Por questões de permissões de microfone, sirva via HTTP:
   python -m http.server 8080
   ```
 
-Abra http://localhost:8080/ no navegador (Chrome/Edge recentes recomendados).
+Abra http://localhost:8080/ (Chrome/Edge recentes).
 
 Permissões:
 - Aceite o uso do microfone quando solicitado.
 
 ---
 
-## Persistência (IndexedDB)
-
-- “recordings” (gravações) guardam { id autoIncrement, name, date, blob }.
-- “sessions” guardam { id autoIncrement, name, date, recordings }, onde `recordings` é uma lista de IDs numéricos (persistidos) e, se necessário, objetos embutidos (schema antigo ou gravações ainda não persistidas). A migração em runtime move blobs embutidos para “recordings” e substitui por IDs.
-
-Importação/Exportação:
-- Exporta sessões para JSON (com blobs base64).
-- Importa JSON de sessão (recria gravações no pool e restaura sessão).
-
----
-
-## Opções de processamento
-
-Use `window.processingOptions` (definida em recorder.js e audio.js) para ajustar:
-- AGC (targetRMS, maxGain, limiterThreshold)
-- Espectrograma (fftSize, hopSize, nMels, colormap, etc.)
-
-Novas opções no worker (ver “Qualidade do espectrograma”):
-- preserveNativeResolution (boolean)
-- outputScale (number)
-
-Exemplo (no DevTools, antes de gravar):
-```js
-window.processingOptions = window.processingOptions || {};
-window.processingOptions.spectrogram = Object.assign({}, window.processingOptions.spectrogram, {
-  nMels: 128,
-  preserveNativeResolution: true,
-  outputScale: 2
-});
-```
-
----
-
-## Qualidade do espectrograma
-
-Se a imagem parecer “pixelada” ou com “blocos” grandes, ajuste:
-- nMels (por ex. 128) para aumentar resolução vertical.
-- preserveNativeResolution: true para gerar 1 coluna por frame (sem forçar largura mínima).
-- outputScale: 2 (ou 1.5) para supersampling no worker e downscale suave no UI.
-- Opcional: desative smoothing ao desenhar, se preferir “pixels nítidos”.
-
-Cuidado: valores muito altos aumentam custo de CPU/memória.
-
----
-
 ## Solução de problemas
 
-- Spectrograma “preto” ou vazio: certifique-se de que `spectrogram.worker.js` está acessível (audio.js primeiro tenta Worker('spectrogram.worker.js'); o fallback inline é simplificado).
-- Nada salva no IndexedDB: verifique permissões, e que `db.js` é carregado antes de `recorder.js/sessions.js`. A migração runtime foi corrigida para evitar deadlock (não chama openDb recursivamente).
-- Prompt "Salvar sessão" aparecendo duas vezes: evite listeners duplicados (somente sessions.js deve cuidar do clique).
-
----
-
-## Roadmap sugerido (mudanças progressivas, com testes)
-
-1) Remoção de scripts legados (após teste):
-   - Remover `spectrogram.js` e `history.js` se confirmarmos que não são usados. Testes:
-     - Gravar, parar, ver waveform e espectrograma; salvar sessão, exportar e importar.
-     - Verificar Console (sem erros de referência a #history-bar/showSpectrogram).
-
-2) Refinos de UI/UX:
-   - Badge de “persistido” já existe; adicionar spinner pequeno até persistir (opcional).
-   - Botão de “Inspecionar DB” (debug) exibindo counts e itens (apenas dev).
-
-3) Refino de espectrograma (opcional):
-   - Tornar `preserveNativeResolution` e `outputScale` configuráveis via UI (pequeno painel avançado).
-   - Ajustar defaults após medição de desempenho.
-
-4) Organização do código:
-   - Manter `recorder.js` focado em gravação/play/visual.
-   - Manter `sessions.js` para sessões e `db.js` para IndexedDB.
-   - `audio.js` lida com processamento e worker.
-
-Cada passo deve ser testado isoladamente (gravar/reproduzir/salvar sessão/export/import).
+- Espectrograma vazio: verifique se `spectrogram.worker.js` carrega (audio.js tenta primeiro o arquivo, depois fallback inline).
+- Nada no IndexedDB: confira permissões e ordem de scripts (db.js antes de recorder.js/sessions.js).
+- Acessibilidade: removidos estilos inline e corrigidos atributos ARIA; listas com role adequado.
+- Erro intermitente “message channel closed”: normalmente causado por extensões do navegador; mitigação futura opcional.
 
 ---
 
