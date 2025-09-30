@@ -178,7 +178,7 @@
   }
 
   // ------------------------------
-  // Trim utilities (detecta silêncio e cria WAV correto)
+  // Trim utilities (detecta silêncio e cria WAV usando encodeWAV de audio.js)
   // ------------------------------
   function _rms(samples, start, len) {
     let sum = 0;
@@ -237,44 +237,7 @@
     return { silenceEnd, sampleRate, samples: channelData.length };
   }
 
-  // WAV encoder helpers (corrigidos: escreve header e PCM)
-  function _floatTo16BitPCM(float32Array) {
-    const l = float32Array.length;
-    const buffer = new ArrayBuffer(l * 2);
-    const view = new DataView(buffer);
-    let offset = 0;
-    for (let i = 0; i < l; i++, offset += 2) {
-      let s = Math.max(-1, Math.min(1, float32Array[i]));
-      s = s < 0 ? s * 0x8000 : s * 0x7FFF;
-      view.setInt16(offset, s, true);
-    }
-    return new Uint8Array(buffer);
-  }
-  function _writeString(view, offset, string) {
-    for (let i = 0; i < string.length; i++) view.setUint8(offset + i, string.charCodeAt(i));
-  }
-  function _encodeWAV(samples, sampleRate) {
-    const pcmBytes = _floatTo16BitPCM(samples);
-    const buffer = new ArrayBuffer(44 + pcmBytes.length);
-    const view = new DataView(buffer);
-    _writeString(view, 0, 'RIFF');
-    view.setUint32(4, 36 + pcmBytes.length, true);
-    _writeString(view, 8, 'WAVE');
-    _writeString(view, 12, 'fmt ');
-    view.setUint32(16, 16, true);
-    view.setUint16(20, 1, true); // PCM
-    view.setUint16(22, 1, true); // mono
-    view.setUint32(24, sampleRate, true);
-    view.setUint32(28, sampleRate * 2, true); // byte rate (sampleRate * blockAlign)
-    view.setUint16(32, 2, true); // blockAlign (2 bytes per sample)
-    view.setUint16(34, 16, true); // bitsPerSample
-    _writeString(view, 36, 'data');
-    view.setUint32(40, pcmBytes.length, true);
-    const wavBytes = new Uint8Array(buffer, 44);
-    wavBytes.set(pcmBytes);
-    return new Blob([buffer], { type: 'audio/wav' });
-  }
-
+  // NOTE: encoding removed from waveform.js — use audio.js encodeWAV implementation (window.encodeWAV)
   async function trimLeadingSilence(source, opts = {}) {
     const o = Object.assign({}, defaultOptions, opts);
     const audioBuffer = await _decodeToAudioBuffer(source);
@@ -284,7 +247,7 @@
     let startSec = analysis.silenceEnd || 0;
     if (startSec >= audioBuffer.duration) {
       const empty = new Float32Array(0);
-      return _encodeWAV(empty, audioBuffer.sampleRate);
+      return window.encodeWAV(empty, audioBuffer.sampleRate);
     }
 
     const startSample = Math.floor(startSec * audioBuffer.sampleRate);
@@ -294,7 +257,7 @@
     for (let i = 0; i < remaining; i++) {
       out[i] = ch0[startSample + i];
     }
-    const wavBlob = _encodeWAV(out, audioBuffer.sampleRate);
+    const wavBlob = window.encodeWAV(out, audioBuffer.sampleRate);
     return wavBlob;
   }
 
