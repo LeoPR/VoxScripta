@@ -1,11 +1,8 @@
-// recorder.js — versão completa (sem implementação inline de waveform).
-// As funções de waveform (showWaveform, drawLiveWaveform, stopLiveWaveform) são esperadas em waveform.js
-// Mantive toda a lógica de gravação, persistência, export/import, espectrogram e handlers.
-// IMPORTANTE: waveform.js deve ser carregado antes deste arquivo (index.html já foi atualizado).
+// recorder.js
 
 let mediaRecorder;
 let audioChunks = [];
-let recordings = []; // workspace: { id, name, date, blob, url, persisted }
+let recordings = [];
 let currentIdx = -1;
 
 const recordBtn = document.getElementById('record-btn');
@@ -27,10 +24,8 @@ const importRecordingInput = document.getElementById('import-recording-input');
 
 let audioCtx, analyser, sourceNode, animationId, liveStream;
 
-// sessions cache explícito (evita variáveis implícitas)
 let sessionsCache = [];
 
-// util para obter config mesclada
 function _getCfg() {
   if (window.appConfig && typeof window.appConfig.getMergedProcessingOptions === 'function') {
     return window.appConfig.getMergedProcessingOptions();
@@ -38,7 +33,6 @@ function _getCfg() {
   return window.processingOptions || {};
 }
 
-// util: formata data no estilo 24h (DD/MM/YYYY HH:mm:ss)
 function formatDate24(dateLike) {
   try {
     const d = (dateLike instanceof Date) ? dateLike : new Date(dateLike);
@@ -50,9 +44,6 @@ function formatDate24(dateLike) {
   }
 }
 
-// ------------------------------
-// Helpers local (base64/blobs)
-// ------------------------------
 function blobToBase64(blob) {
   return new Promise((resolve, reject) => {
     const fr = new FileReader();
@@ -69,9 +60,6 @@ function base64ToBlob(base64, type='application/octet-stream') {
   return fetch('data:' + type + ';base64,' + base64).then(r => r.blob());
 }
 
-// ------------------------------
-// API para sessions.js (exposição controlada)
-// ------------------------------
 window.getWorkspaceRecordings = function() {
   return recordings;
 };
@@ -84,9 +72,6 @@ window.appendWorkspaceRecording = function(rec) {
   try { renderRecordingsList(recordings); } catch(e){ /* ignore */ }
 };
 
-// ------------------------------
-// Função playRecording
-// ------------------------------
 function playRecording(rec) {
   try {
     if (!rec) return;
@@ -99,7 +84,7 @@ function playRecording(rec) {
         console.warn('playRecording: reprodução bloqueada ou falhou', err);
       });
       statusText.textContent = `Reproduzindo: ${rec.name || ''}`;
-      // delegar waveform para waveform.js se disponível
+
       try {
         if (rec.blob && typeof window.showWaveform === 'function') {
           window.showWaveform(rec.blob);
@@ -115,9 +100,6 @@ function playRecording(rec) {
   }
 }
 
-// ------------------------------
-// persistRecording - não bloqueante
-// ------------------------------
 async function persistRecording(blob, suggestedName) {
   const tempId = 'TEMP__' + Date.now() + '__' + Math.floor(Math.random() * 10000);
   const recDate = new Date().toISOString();
@@ -160,9 +142,6 @@ async function persistRecording(blob, suggestedName) {
   return rec;
 }
 
-// ------------------------------
-// Render sessions list (delegado para sessions.js - stub de compatibilidade)
-// ------------------------------
 function renderSessionsList() {
   if (typeof window.renderSessionsList === 'function') {
     window.renderSessionsList();
@@ -186,9 +165,6 @@ function renderSessionsList() {
   }
 }
 
-// ------------------------------
-// Render recordings list in workspace (padronizado visualmente com sessions)
-// ------------------------------
 function renderRecordingsList(list) {
   const container = document.getElementById('recordings-list');
   if (!container) return;
@@ -198,17 +174,12 @@ function renderRecordingsList(list) {
     const item = document.createElement('div');
     item.className = 'recording-item' + (idx === currentIdx ? ' selected' : '');
     item.setAttribute('role', 'listitem');
-    // title para hover-preview com data 24h
     item.title = `${rec.name || ''}\n${formatDate24(rec.date)}`;
-
-    // Left: título (linha 1) + meta (linha 2 pequena)
     const left = document.createElement('div');
     left.style.display = 'flex';
     left.style.flexDirection = 'column';
     left.style.flex = '1 1 auto';
-    left.style.minWidth = '0'; // permite truncamento do título
-
-    // título com badges inline (linha 1)
+    left.style.minWidth = '0';
     const titleRow = document.createElement('div');
     titleRow.style.display = 'flex';
     titleRow.style.alignItems = 'center';
@@ -245,10 +216,8 @@ function renderRecordingsList(list) {
     meta.className = 'recording-meta';
     meta.textContent = formatDate24(rec.date);
     left.appendChild(meta);
-
     item.appendChild(left);
 
-    // Right: ações agrupadas (padronizado com sessions)
     const right = document.createElement('div');
     right.style.display = 'flex';
     right.style.gap = '8px';
@@ -386,9 +355,6 @@ function renderRecordingsList(list) {
   }
 }
 
-// ------------------------------
-// selectRecordingInUI — seleciona, atualiza UI e dispara processamento/reprodução
-// ------------------------------
 function selectRecordingInUI(idx, rec) {
   currentIdx = idx;
   if (animationId) { cancelAnimationFrame(animationId); animationId = null; }
@@ -415,18 +381,12 @@ function selectRecordingInUI(idx, rec) {
   }
 }
 
-// ------------------------------
-// selecionar sessão (carrega gravações)
-// ------------------------------
 async function selectSession(id) {
   if (typeof window.selectSession === 'function') {
     return window.selectSession(id);
   }
 }
 
-// ------------------------------
-// processAndPlayBlob wrapper: delega para audio.js via window.processAndPlayBlob
-// ------------------------------
 async function processAndPlayBlobDelegator(blob) {
   if (typeof window.processAndPlayBlob === 'function') {
     try {
@@ -436,7 +396,6 @@ async function processAndPlayBlobDelegator(blob) {
       return null;
     }
   } else {
-    // fallback local (encode + set player) — use the canonical encodeWAV from audio.js
     try {
       const aCtx = new (window.AudioContext || window.webkitAudioContext)();
       const arrayBuffer = await blob.arrayBuffer();
@@ -458,9 +417,6 @@ async function processAndPlayBlobDelegator(blob) {
   }
 }
 
-// ------------------------------
-// AGC + WAV encode helpers (mantidos localmente)
-// ------------------------------
 function applyAGC(signal, targetRMS = 0.08, maxGain = 8, limiterThreshold = 0.99) {
   let sum = 0;
   for (let i = 0; i < signal.length; i++) {
@@ -488,9 +444,6 @@ function applyAGC(signal, targetRMS = 0.08, maxGain = 8, limiterThreshold = 0.99
   return { processed: out, gain };
 }
 
-// ------------------------------
-// Spectrogram drawing + processing indicator
-// ------------------------------
 function showProcessing(show, percent = 0) {
   if (!processingIndicator || !processingProgress) return;
   const cfg = _getCfg();
@@ -535,9 +488,6 @@ function drawSpectrogramPixels(srcWidth, srcHeight, pixels) {
   spectrogramCanvas.style.display = 'block';
 }
 
-// ------------------------------
-// Interface com histórico (quando selecionar gravação fora de sessões)
-// ------------------------------
 window.onSelectRecording = function(idx) {
   if (idx < 0 || idx >= recordings.length) return;
   currentIdx = idx;
@@ -564,7 +514,6 @@ window.onSelectRecording = function(idx) {
   if (typeof window.renderHistory === 'function') window.renderHistory(recordings, currentIdx);
 };
 
-// navigation
 try {
   prevBtn.addEventListener('click', () => {
     if (recordings.length === 0) return;
@@ -580,9 +529,6 @@ try {
   });
 } catch(_) {}
 
-// ------------------------------
-// NOVO: Importar gravação (arquivo de áudio) via #import-recording-input
-// ------------------------------
 if (importRecordingInput && !importRecordingInput.__rec_import_bound) {
   importRecordingInput.addEventListener('change', async (ev) => {
     const file = ev.target && ev.target.files && ev.target.files[0] ? ev.target.files[0] : null;
@@ -607,9 +553,6 @@ if (importRecordingInput && !importRecordingInput.__rec_import_bound) {
   importRecordingInput.__rec_import_bound = true;
 }
 
-// ------------------------------
-// Recording: handlers mínimos para Gravar/Parar
-// ------------------------------
 if (recordBtn && !recordBtn.__recorder_click_bound) {
   recordBtn.addEventListener('click', async () => {
     try {
@@ -627,7 +570,6 @@ if (recordBtn && !recordBtn.__recorder_click_bound) {
       analyser.smoothingTimeConstant = 0.3;
       sourceNode.connect(analyser);
 
-      // delegar desenho ao waveform.js se disponível
       try {
         if (typeof window.drawLiveWaveform === 'function') {
           window.drawLiveWaveform(analyser);
@@ -660,7 +602,6 @@ if (recordBtn && !recordBtn.__recorder_click_bound) {
             try { liveStream.getTracks().forEach(t => t.stop()); } catch(_) {}
             liveStream = null;
           }
-          // parar desenho live (delegado)
           try { if (typeof window.stopLiveWaveform === 'function') window.stopLiveWaveform(); } catch(_) {}
           if (animationId) { cancelAnimationFrame(animationId); animationId = null; }
         }
@@ -700,9 +641,6 @@ if (stopBtn && !stopBtn.__recorder_click_bound) {
   stopBtn.__recorder_click_bound = true;
 }
 
-// ------------------------------
-// Fallback local para carregar sessões (evita colisão com sessions.js)
-// ------------------------------
 async function loadSessionsSafe() {
   try {
     if (typeof window.getAllSessionsFromDb === 'function') {
@@ -718,9 +656,6 @@ async function loadSessionsSafe() {
   }
 }
 
-// ------------------------------
-// Init: register worker.onmessage handler (if available) and load sessions (non-blocking)
-// ------------------------------
 (function init() {
   try {
     if (typeof window.openDb === 'function') {
