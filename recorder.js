@@ -1,6 +1,6 @@
 // recorder.js — versão completa (sem implementação inline de waveform).
 // As funções de waveform (showWaveform, drawLiveWaveform, stopLiveWaveform) são esperadas em waveform.js
-// Mantive toda a lógica de gravação, persistência, export/import, spectrogram e handlers.
+// Mantive toda a lógica de gravação, persistência, export/import, espectrogram e handlers.
 // IMPORTANTE: waveform.js deve ser carregado antes deste arquivo (index.html já foi atualizado).
 
 let mediaRecorder;
@@ -430,7 +430,7 @@ async function processAndPlayBlobDelegator(blob) {
       return null;
     }
   } else {
-    // fallback local (encode + set player) — keep minimal and safe
+    // fallback local (encode + set player) — use the canonical encodeWAV from audio.js
     try {
       const aCtx = new (window.AudioContext || window.webkitAudioContext)();
       const arrayBuffer = await blob.arrayBuffer();
@@ -438,7 +438,8 @@ async function processAndPlayBlobDelegator(blob) {
       const sampleRate = audioBuffer.sampleRate;
       const raw = audioBuffer.getChannelData(0);
       const { processed } = applyAGC(raw, (window.processingOptions && window.processingOptions.agc && window.processingOptions.agc.targetRMS) || 0.08, (window.processingOptions && window.processingOptions.agc && window.processingOptions.agc.maxGain) || 8, (window.processingOptions && window.processingOptions.agc && window.processingOptions.agc.limiterThreshold) || 0.99);
-      const wavBlob = encodeWAV(processed, sampleRate);
+      // use encodeWAV provided by audio.js (loaded earlier)
+      const wavBlob = window.encodeWAV(processed, sampleRate);
       const url = URL.createObjectURL(wavBlob);
       audioPlayer.src = url;
       audioPlayer.load();
@@ -479,43 +480,6 @@ function applyAGC(signal, targetRMS = 0.08, maxGain = 8, limiterThreshold = 0.99
     out[i] = v;
   }
   return { processed: out, gain };
-}
-
-function writeString(view, offset, string) {
-  for (let i = 0; i < string.length; i++) view.setUint8(offset + i, string.charCodeAt(i));
-}
-function floatTo16BitPCM(float32Array) {
-  const l = float32Array.length;
-  const buffer = new ArrayBuffer(l * 2);
-  const view = new DataView(buffer);
-  let offset = 0;
-  for (let i = 0; i < l; i++, offset += 2) {
-    let s = Math.max(-1, Math.min(1, float32Array[i]));
-    s = s < 0 ? s * 0x8000 : s * 0x7FFF;
-    view.setInt16(offset, s, true);
-  }
-  return new Uint8Array(buffer);
-}
-function encodeWAV(samples, sampleRate) {
-  const pcmBytes = floatTo16BitPCM(samples);
-  const buffer = new ArrayBuffer(44 + pcmBytes.length);
-  const view = new DataView(buffer);
-  writeString(view, 0, 'RIFF');
-  view.setUint32(4, 36 + pcmBytes.length, true);
-  writeString(view, 8, 'WAVE');
-  writeString(view, 12, 'fmt ');
-  view.setUint32(16, 16, true);
-  view.setUint16(20, 1, true);
-  view.setUint16(22, 1, true);
-  view.setUint32(24, sampleRate, true);
-  view.setUint32(28, sampleRate * 2, true);
-  view.setUint16(32, 2, true);
-  view.setUint16(34, 16, true);
-  writeString(view, 36, 'data');
-  view.setUint32(40, pcmBytes.length, true);
-  const wavBytes = new Uint8Array(buffer, 44);
-  wavBytes.set(pcmBytes);
-  return new Blob([buffer], { type: 'audio/wav' });
 }
 
 // ------------------------------
