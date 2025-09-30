@@ -43,7 +43,6 @@
           <div style="display:flex;gap:6px;">
             <button id="export-all-btn" class="icon-btn" title="Exportar tudo" aria-label="Exportar tudo">⤓</button>
             <button id="import-all-btn" class="icon-btn" title="Importar backup" aria-label="Importar backup">📁</button>
-            <!-- label acessível (visualmente oculto) para o input de import-all -->
             <label for="import-all-input" class="sr-only">Importar backup</label>
             <input id="import-all-input" type="file" accept="application/json" class="hidden" title="Importar backup" aria-label="Importar backup" />
           </div>
@@ -52,7 +51,7 @@
 
       <div id="sessions-list" class="sessions-list" aria-label="Lista de sessões"></div>
       <div class="history-divider"></div>
-      <div id="recordings-list" class="recordings-list" aria-label="Lista de gravações"></div>
+      <div id="recordings-list" class="recordings-list" role="list" aria-label="Lista de gravações"></div>
     </aside>
 
     <section class="player-container">

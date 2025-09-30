@@ -197,6 +197,7 @@ function renderRecordingsList(list) {
   arr.forEach((rec, idx) => {
     const item = document.createElement('div');
     item.className = 'recording-item' + (idx === currentIdx ? ' selected' : '');
+    item.setAttribute('role', 'listitem');
     // title para hover-preview com data 24h
     item.title = `${rec.name || ''}\n${formatDate24(rec.date)}`;
 
@@ -704,11 +705,11 @@ async function loadSessionsSafe() {
     } else {
       sessionsCache = [];
     }
-    renderSessionsList();
+    renderRecordingsList(recordings);
   } catch (err) {
     console.warn('loadSessionsSafe: erro ao carregar sessões:', err);
     sessionsCache = [];
-    renderSessionsList();
+    renderRecordingsList(recordings);
   }
 }
 
