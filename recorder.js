@@ -377,7 +377,12 @@ function renderRecordingsList(list) {
     container.appendChild(item);
   });
   if (arr.length === 0) {
-    container.innerHTML = '<div style="color:#666;font-size:13px;">Nenhuma gravação nesta sessão / workspace</div>';
+    const emptyItem = document.createElement('div');
+    emptyItem.setAttribute('role', 'listitem');
+    emptyItem.style.color = '#666';
+    emptyItem.style.fontSize = '13px';
+    emptyItem.textContent = 'Nenhuma gravação nesta sessão / workspace';
+    container.appendChild(emptyItem);
   }
 }
 
