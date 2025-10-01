@@ -109,37 +109,68 @@ async function persistRecording(blob, suggestedName) {
     date: recDate,
     blob,
     url: URL.createObjectURL(blob),
-    persisted: false
+    persisted: false,
+    persisting: false // flag de estado visual
   };
 
+  // marcar como "persistindo" antes de renderizar
+  rec.persisting = true;
   recordings.push(rec);
   currentIdx = recordings.length - 1;
   renderRecordingsList(recordings);
 
   if (typeof window.saveRecordingToDbObj === 'function') {
     try {
-      console.debug('persistRecording: tentando salvar no DB...', rec.name);
+      // salvar no DB (assíncrono)
       const savedId = await window.saveRecordingToDbObj({ name: rec.name, date: rec.date, blob: rec.blob });
       if (savedId !== undefined && savedId !== null) {
+        // atualizar o item correspondente (encontrar por tempId)
         for (let i = 0; i < recordings.length; i++) {
           if (recordings[i] && recordings[i].id === tempId) {
             recordings[i] = { ...recordings[i], id: savedId, persisted: true };
-            console.debug('persistRecording: gravação persistida com id=', savedId);
+            // remover flag persisting
+            delete recordings[i].persisting;
             break;
           }
         }
         renderRecordingsList(recordings);
       } else {
+        // fallback: não retornou id, remover persisting
+        for (let i = 0; i < recordings.length; i++) {
+          if (recordings[i] && recordings[i].id === tempId) {
+            delete recordings[i].persisting;
+            break;
+          }
+        }
+        renderRecordingsList(recordings);
         console.warn('persistRecording: saveRecordingToDbObj não retornou id');
       }
     } catch (err) {
+      // falha ao salvar — limpar persisting e manter em memória
+      for (let i = 0; i < recordings.length; i++) {
+        if (recordings[i] && recordings[i].id === tempId) {
+          delete recordings[i].persisting;
+          recordings[i].persisted = false;
+          break;
+        }
+      }
+      renderRecordingsList(recordings);
       console.warn('persistRecording: falha ao salvar no DB (mantendo em memória):', err);
+      return rec;
     }
   } else {
-    console.debug('persistRecording: no DB API; gravação fica apenas em memória');
+    // sem API de DB: não persistimos globalmente
+    for (let i = 0; i < recordings.length; i++) {
+      if (recordings[i] && recordings[i].id === tempId) {
+        delete recordings[i].persisting;
+        recordings[i].persisted = false;
+        break;
+      }
+    }
+    renderRecordingsList(recordings);
   }
 
-  return rec;
+  return recordings.find(r => r && (r.id === tempId || r.id !== tempId && r.name === (suggestedName || rec.name))) || rec;
 }
 
 function renderSessionsList() {
@@ -175,11 +206,14 @@ function renderRecordingsList(list) {
     item.className = 'recording-item' + (idx === currentIdx ? ' selected' : '');
     item.setAttribute('role', 'listitem');
     item.title = `${rec.name || ''}\n${formatDate24(rec.date)}`;
+
+    // Left column
     const left = document.createElement('div');
     left.style.display = 'flex';
     left.style.flexDirection = 'column';
     left.style.flex = '1 1 auto';
     left.style.minWidth = '0';
+
     const titleRow = document.createElement('div');
     titleRow.style.display = 'flex';
     titleRow.style.alignItems = 'center';
@@ -194,17 +228,23 @@ function renderRecordingsList(list) {
     title.style.whiteSpace = 'nowrap';
     titleRow.appendChild(title);
 
-    if (rec.persisted) {
+    // Persisting spinner / persisted badge / temp badge
+    if (rec.persisting) {
+      const spin = document.createElement('span');
+      spin.className = 'persist-spinner';
+      spin.title = 'Salvando...';
+      spin.setAttribute('aria-label', 'Salvando');
+      spin.setAttribute('role', 'status');
+      titleRow.appendChild(spin);
+    } else if (rec.persisted) {
       const badge = document.createElement('span');
-      badge.style.fontSize = '12px';
-      badge.style.color = 'green';
+      badge.className = 'persisted-badge';
       badge.title = 'Gravação persistida no banco';
       badge.textContent = '✓';
       titleRow.appendChild(badge);
-    } else if (typeof rec.id === 'string' && rec.id && rec.id.startsWith('TEMP__')) {
+    } else if (typeof rec.id === 'string' && rec.id && String(rec.id).startsWith('TEMP__')) {
       const tempBadge = document.createElement('span');
-      tempBadge.style.fontSize = '12px';
-      tempBadge.style.color = '#999';
+      tempBadge.className = 'temp-badge';
       tempBadge.title = 'Ainda não persistido';
       tempBadge.textContent = '•';
       titleRow.appendChild(tempBadge);
@@ -218,6 +258,7 @@ function renderRecordingsList(list) {
     left.appendChild(meta);
     item.appendChild(left);
 
+    // Right actions
     const right = document.createElement('div');
     right.style.display = 'flex';
     right.style.gap = '8px';
