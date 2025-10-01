@@ -1,6 +1,6 @@
 /* style.css — Versão atualizada (ajuste de largura da lateral esquerda)
    Moved inline styles to classes for accessibility/cleanliness.
-   Adicionadas classes visuais para persistência de gravação.
+   Adicionadas classes visuais para persistência de gravação e painel Train Pool.
 */
 
 :root{
@@ -48,23 +48,44 @@ body {
   overflow: hidden;
 }
 
-/* Backup row moved from inline styles */
-.backup-row {
+/* Train panel (nova, direita) */
+.train-panel {
+  width: 260px;
+  min-width: 200px;
+  max-width: 320px;
+  flex: 0 0 auto;
+  background: linear-gradient(180deg,#fff,#fbfbfb);
+  border-radius: 12px;
+  box-shadow: var(--soft-shadow);
   display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin-top: 8px;
-  gap: 8px;
+  flex-direction: column;
+  padding: 10px;
+  height: calc(100vh - 48px);
+  overflow: auto;
 }
-.backup-row .backup-label {
-  font-size: 12px;
-  color: #666;
-  padding-left: 4px;
+.train-header {
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:8px;
+  margin-bottom:8px;
+  border-bottom: 1px solid #efefef;
+  padding-bottom:6px;
 }
-.backup-row .backup-actions {
-  display: flex;
-  gap: 6px;
+.train-title { font-weight:600; font-size:13px; padding-left:4px; }
+.train-list { display:flex; flex-direction:column; gap:6px; margin-top:8px; }
+.train-list .train-item {
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  background: #fff;
+  border-radius:8px;
+  padding:8px;
+  box-shadow: 0 1px 6px rgba(0,0,0,0.04);
+  font-size:13px;
 }
+.train-list .train-item .meta { color:#666; font-size:12px; margin-left:6px; }
+.train-footer { margin-top:8px; color:#666; font-size:12px; }
 
 /* Spinner/persist badge */
 .persist-spinner {
@@ -103,17 +124,39 @@ body {
   margin-left: 6px;
 }
 
-/* Se houver pouco espaço (mobile), permitir ocupar 100% com prioridade */
-@media (max-width: 900px) {
-  .history-panel {
-    width: 100%;
-    max-width: none;
-    min-width: 0;
-    order: 2;
-    height: auto;
-  }
+/* Modal do analyzer (resumo) */
+.analyzer-modal {
+  position: fixed;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  width: 680px;
+  max-width: calc(100% - 40px);
+  background: white;
+  border-radius: 12px;
+  box-shadow: 0 18px 60px rgba(0,0,0,0.25);
+  padding: 16px;
+  z-index: 2000;
+}
+.analyzer-modal .modal-header {
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  margin-bottom:8px;
+}
+.analyzer-modal .modal-body {
+  max-height: 50vh;
+  overflow:auto;
+  font-size:13px;
+}
+.analyzer-modal .modal-actions {
+  margin-top: 10px;
+  display:flex;
+  gap:8px;
+  justify-content:flex-end;
 }
 
+/* Restante do css (player, lists...) mantido como antes */
 .history-header {
   display:flex;
   justify-content:space-between;
@@ -179,40 +222,6 @@ body {
   padding-right: 6px;
 }
 
-/* Padronização visual para cada item de sessão */
-.session-item {
-  background: rgba(123,63,228,0.04);
-  border-radius: 8px;
-  padding: 10px;
-  display:flex;
-  align-items:center;
-  justify-content:space-between;
-  cursor:pointer;
-  transition: background 120ms ease, transform 100ms ease;
-  gap: 8px;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-.session-item > div:first-child {
-  flex: 1 1 auto;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.session-item:hover { background: rgba(123,63,228,0.08); transform: translateY(-1px); }
-
-.session-item .meta, .session-item .item-controls, .session-item .full-date {
-  display: block;
-}
-.session-item .meta {
-  font-size: 12px;
-  color: #666;
-  margin-top: 4px;
-  white-space: normal;
-}
-
 /* Recordings list (padronizado visualmente) */
 .recordings-list {
   flex:1;
@@ -228,7 +237,7 @@ body {
 .recording-item {
   background: #fff;
   border-radius: 8px;
-  padding: 10px; /* igual à session-item */
+  padding: 10px;
   display:flex;
   align-items:center;
   gap:12px;
@@ -237,7 +246,6 @@ body {
 }
 .recording-item:hover { background: #fffafc; box-shadow: 0 6px 14px rgba(0,0,0,0.05); }
 
-/* Left column (title + meta) */
 .recording-item > div:first-child {
   flex: 1 1 auto;
   min-width: 0;
@@ -248,8 +256,6 @@ body {
   gap:8px;
   min-width:0;
 }
-
-/* Meta (data) sempre visível e pequena */
 .recording-meta {
   display: block;
   font-size: 12px;
@@ -258,14 +264,6 @@ body {
   white-space: normal;
 }
 
-/* Right actions group */
-.recording-item > div.actions {
-  display: flex;
-  gap: 8px;
-  align-items: center;
-}
-
-/* Button base and variants */
 .btn {
   display: inline-flex;
   align-items: center;
@@ -284,7 +282,7 @@ body {
   box-shadow: 0 8px 18px rgba(0,0,0,0.06);
 }
 
-.small, .icon-btn, .play-btn, .rename-btn, .delete-btn {
+.small, .play-btn, .rename-btn, .delete-btn {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -297,24 +295,15 @@ body {
   transition: transform 120ms ease, box-shadow 120ms ease;
   font-size: 14px;
 }
-.small:hover, .icon-btn:hover, .play-btn:hover, .rename-btn:hover, .delete-btn:hover {
+.small:hover, .play-btn:hover, .rename-btn:hover, .delete-btn:hover {
   transform: translateY(-1px);
 }
-.icon-btn { padding: 6px; min-width: 34px; min-height: 34px; }
 .play-btn { color: var(--accent); }
 .rename-btn, .delete-btn { padding: 6px; }
 
-/* delete hover */
 .delete-btn { color: var(--danger); }
 .delete-btn:hover { background: rgba(255,59,48,0.06); }
 
-/* small button */
-.small {
-  font-size: 14px;
-  padding: 6px;
-}
-
-/* Player container */
 .player-container {
   flex: 1;
   max-width: 940px;
@@ -394,10 +383,11 @@ body {
 
 @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
 
-@media (max-width: 900px) {
+@media (max-width: 1200px) {
   .main { flex-direction: column; }
   .history-panel { width: 100%; max-width: none; min-width: 0; order: 2; height: auto; }
   .player-container { order: 1; }
+  .train-panel { width: 100%; order: 3; max-width: none; min-width: 0; height: auto; }
   .waveform, .spectrogram { height: 140px; }
 }
 

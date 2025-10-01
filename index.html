@@ -60,6 +60,9 @@
           <button id="stop-btn" class="control" disabled title="Parar" aria-label="Parar">■</button>
           <button id="next-btn" class="control" title="Próxima" aria-label="Próxima">⏭</button>
           <button id="trim-audio-btn" class="small icon-btn" title="Trim silêncio" aria-label="Trim silêncio">✂️</button>
+
+          <!-- Novo: botão de análise (Passo 1) -->
+          <button id="analyze-btn" class="small icon-btn" title="Analisar (features)" aria-label="Analisar gravação">🔬</button>
         </div>
         <div class="player-audio">
           <audio id="audio-player" controls class="player-audio-element"></audio>
@@ -75,6 +78,20 @@
         <p id="processing-progress" class="processing-progress">Processando: 0%</p>
       </div>
     </section>
+
+    <!-- Nova coluna direita: Train Pool (Passo 1 UI) -->
+    <aside class="train-panel" id="train-panel" aria-label="Train pool">
+      <div class="train-header">
+        <div class="train-title">Train Pool</div>
+        <div class="train-actions">
+          <button id="clear-train-btn" class="small icon-btn" title="Limpar lista">🧹</button>
+        </div>
+      </div>
+      <div id="train-list" class="train-list" aria-live="polite"></div>
+      <div class="train-footer">
+        <small>Adicione gravações analisadas aqui para treinar em massa.</small>
+      </div>
+    </aside>
   </div>
 
   <script src="db.js"></script>
@@ -85,5 +102,11 @@
 
   <script src="recorder.js"></script>
   <script src="sessions.js"></script>
+
+  <!-- novo: analyzer (extrator de features) -->
+  <script src="analyzer.js"></script>
+
+  <!-- UI para integração do analyzer (Passo 1) -->
+  <script src="ui-analyzer.js"></script>
 </body>
 </html>
