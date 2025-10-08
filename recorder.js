@@ -1,4 +1,5 @@
-// recorder.js
+// (Arquivo completo atualizado — alteração principal: armazenar meta do espectrograma e redimensionar overlay)
+// Mantive o restante exatamente como na versão anterior com renomeação persistente.
 
 let mediaRecorder;
 let audioChunks = [];
@@ -13,6 +14,7 @@ const statusText = document.getElementById('status');
 const audioPlayer = document.getElementById('audio-player');
 const waveform = document.getElementById('waveform');
 const spectrogramCanvas = document.getElementById('spectrogram');
+const spectrogramOverlay = document.getElementById('spectrogram-overlay');
 
 const processingIndicator = document.getElementById('processing-indicator');
 const processingProgress = document.getElementById('processing-progress');
@@ -110,10 +112,8 @@ async function persistRecording(blob, suggestedName) {
     blob,
     url: URL.createObjectURL(blob),
     persisted: false,
-    persisting: false // flag de estado visual
+    persisting: false
   };
-
-  // marcar como "persistindo" antes de renderizar
   rec.persisting = true;
   recordings.push(rec);
   currentIdx = recordings.length - 1;
@@ -121,21 +121,17 @@ async function persistRecording(blob, suggestedName) {
 
   if (typeof window.saveRecordingToDbObj === 'function') {
     try {
-      // salvar no DB (assíncrono)
       const savedId = await window.saveRecordingToDbObj({ name: rec.name, date: rec.date, blob: rec.blob });
       if (savedId !== undefined && savedId !== null) {
-        // atualizar o item correspondente (encontrar por tempId)
         for (let i = 0; i < recordings.length; i++) {
           if (recordings[i] && recordings[i].id === tempId) {
             recordings[i] = { ...recordings[i], id: savedId, persisted: true };
-            // remover flag persisting
             delete recordings[i].persisting;
             break;
           }
         }
         renderRecordingsList(recordings);
       } else {
-        // fallback: não retornou id, remover persisting
         for (let i = 0; i < recordings.length; i++) {
           if (recordings[i] && recordings[i].id === tempId) {
             delete recordings[i].persisting;
@@ -146,7 +142,6 @@ async function persistRecording(blob, suggestedName) {
         console.warn('persistRecording: saveRecordingToDbObj não retornou id');
       }
     } catch (err) {
-      // falha ao salvar — limpar persisting e manter em memória
       for (let i = 0; i < recordings.length; i++) {
         if (recordings[i] && recordings[i].id === tempId) {
           delete recordings[i].persisting;
@@ -159,7 +154,6 @@ async function persistRecording(blob, suggestedName) {
       return rec;
     }
   } else {
-    // sem API de DB: não persistimos globalmente
     for (let i = 0; i < recordings.length; i++) {
       if (recordings[i] && recordings[i].id === tempId) {
         delete recordings[i].persisting;
@@ -173,16 +167,12 @@ async function persistRecording(blob, suggestedName) {
   return recordings.find(r => r && (r.id === tempId || r.id !== tempId && r.name === (suggestedName || rec.name))) || rec;
 }
 
-// Salva alterações de nome/metadata na memória e, se possível, no DB.
-// updatedRec: objeto com pelo menos id e os campos a atualizar (ex: { id, name })
 async function saveChangesToSessionRecording(updatedRec) {
   try {
     if (!updatedRec) return false;
-    // atualizar memória (recordings[])
     for (let i = 0; i < recordings.length; i++) {
       const r = recordings[i];
       if (!r) continue;
-      // comparar por id (string or number)
       if (String(r.id) === String(updatedRec.id)) {
         recordings[i] = Object.assign({}, recordings[i], updatedRec);
         break;
@@ -190,16 +180,12 @@ async function saveChangesToSessionRecording(updatedRec) {
     }
     renderRecordingsList(recordings);
 
-    // se id for numérico, persistir alteração no DB
     if (updatedRec.id !== undefined && updatedRec.id !== null && !String(updatedRec.id).startsWith('TEMP')) {
-      // tentar atualizar no DB se a API estiver disponível
       if (typeof window.updateRecordingInDb === 'function' && typeof window.getRecordingById === 'function') {
         try {
-          // obter entry atual do DB para manter blob/date caso não venham no updatedRec
           const dbObj = await window.getRecordingById(updatedRec.id);
           const toSave = Object.assign({}, dbObj || {}, updatedRec);
           await window.updateRecordingInDb(toSave);
-          // opcional: re-carregar do DB (não obrigatório)
           return true;
         } catch (err) {
           console.warn('saveChangesToSessionRecording: falha ao atualizar DB:', err);
@@ -213,7 +199,6 @@ async function saveChangesToSessionRecording(updatedRec) {
     return false;
   }
 }
-
 window.saveChangesToSessionRecording = saveChangesToSessionRecording;
 
 function renderSessionsList() {
@@ -250,7 +235,6 @@ function renderRecordingsList(list) {
     item.setAttribute('role', 'listitem');
     item.title = `${rec.name || ''}\n${formatDate24(rec.date)}`;
 
-    // Left column
     const left = document.createElement('div');
     left.style.display = 'flex';
     left.style.flexDirection = 'column';
@@ -271,7 +255,6 @@ function renderRecordingsList(list) {
     title.style.whiteSpace = 'nowrap';
     titleRow.appendChild(title);
 
-    // Persisting spinner / persisted badge / temp badge
     if (rec.persisting) {
       const spin = document.createElement('span');
       spin.className = 'persist-spinner';
@@ -301,7 +284,6 @@ function renderRecordingsList(list) {
     left.appendChild(meta);
     item.appendChild(left);
 
-    // Right actions
     const right = document.createElement('div');
     right.style.display = 'flex';
     right.style.gap = '8px';
@@ -373,9 +355,8 @@ function renderRecordingsList(list) {
       input.onkeydown = (e) => {
         if (e.key === 'Enter') {
           const newVal = input.value;
-          title.textContent = newVal;
-          // persist change (memória + DB)
-          if (typeof saveChangesToSessionRecording === 'function') saveChangesToSessionRecording({ ...rec, name: newVal });
+            title.textContent = newVal;
+            if (typeof saveChangesToSessionRecording === 'function') saveChangesToSessionRecording({ ...rec, name: newVal });
         }
       };
       input.onblur = () => {
@@ -426,7 +407,6 @@ function renderRecordingsList(list) {
     right.appendChild(del);
 
     item.appendChild(right);
-
     item.onclick = () => selectRecordingInUI(idx, rec);
     container.appendChild(item);
   });
@@ -453,7 +433,6 @@ function selectRecordingInUI(idx, rec) {
   }
   renderRecordingsList(recordings);
   if (rec && rec.blob) {
-    // waveform delegated to waveform.js
     if (typeof window.showWaveform === 'function') {
       try { window.showWaveform(rec.blob); } catch (_) {}
     }
@@ -464,6 +443,7 @@ function selectRecordingInUI(idx, rec) {
     }
     fetch(rec.url).then(r => r.blob()).then(b => processAndPlayBlobDelegator(b)).catch(()=>{});
   }
+  if (typeof window.renderHistory === 'function') window.renderHistory(recordings, currentIdx);
 }
 
 async function selectSession(id) {
@@ -520,6 +500,7 @@ function showProcessing(show, percent = 0) {
   }
 }
 
+// Ajustado: salvar meta para overlay
 function drawSpectrogramPixels(srcWidth, srcHeight, pixels) {
   if (!spectrogramCanvas) return;
   const cfg = _getCfg();
@@ -530,11 +511,13 @@ function drawSpectrogramPixels(srcWidth, srcHeight, pixels) {
   const visualWidth = visualMaxWidth;
   const aspect = srcHeight / srcWidth;
   const visualHeight = Math.max(80, Math.round(visualWidth * aspect));
+
   const off = document.createElement('canvas');
   off.width = srcWidth;
   off.height = srcHeight;
   const offCtx = off.getContext('2d');
   offCtx.putImageData(new ImageData(pixels, srcWidth, srcHeight), 0, 0);
+
   spectrogramCanvas.width = Math.round(visualWidth * dpr);
   spectrogramCanvas.height = Math.round(visualHeight * dpr);
   spectrogramCanvas.style.width = visualWidth + 'px';
@@ -548,6 +531,22 @@ function drawSpectrogramPixels(srcWidth, srcHeight, pixels) {
   ctx.clearRect(0, 0, visualWidth, visualHeight);
   ctx.drawImage(off, 0, 0, srcWidth, srcHeight, 0, 0, visualWidth, visualHeight);
   spectrogramCanvas.style.display = 'block';
+
+  // Redimensionar overlay para coincidir
+  if (spectrogramOverlay) {
+    spectrogramOverlay.width = spectrogramCanvas.width;
+    spectrogramOverlay.height = spectrogramCanvas.height;
+    spectrogramOverlay.style.width = spectrogramCanvas.style.width;
+    spectrogramOverlay.style.height = spectrogramCanvas.style.height;
+  }
+
+  // Guardar meta para overlay (frames serão inferidos pelos features)
+  window._lastSpectrogramCanvasMeta = {
+    srcWidth, srcHeight,
+    displayWidth: visualWidth,
+    displayHeight: visualHeight,
+    dpr
+  };
 }
 
 window.onSelectRecording = function(idx) {
@@ -656,7 +655,6 @@ if (recordBtn && !recordBtn.__recorder_click_bound) {
           console.error('Erro ao finalizar gravação:', err);
           statusText.textContent = 'Erro ao finalizar gravação.';
         } finally {
-          // Limpeza
           recordBtn.disabled = false;
           stopBtn.disabled = true;
           if (audioCtx) { audioCtx.close().catch(()=>{}); audioCtx = null; }

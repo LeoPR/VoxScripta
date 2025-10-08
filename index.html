@@ -23,7 +23,7 @@
             <span class="sr-only">Exportar sessão</span>
           </button>
 
-          <label class="small file-label icon-btn" title="Importar sessão" aria-label="Importar sessão">
+            <label class="small file-label icon-btn" title="Importar sessão" aria-label="Importar sessão">
             <span class="icon" aria-hidden="true">📂</span>
             <input id="import-session-input" type="file" accept=".json" class="hidden">
             <span class="sr-only">Importar sessão</span>
@@ -60,9 +60,9 @@
           <button id="stop-btn" class="control" disabled title="Parar" aria-label="Parar">■</button>
           <button id="next-btn" class="control" title="Próxima" aria-label="Próxima">⏭</button>
           <button id="trim-audio-btn" class="small icon-btn" title="Trim silêncio" aria-label="Trim silêncio">✂️</button>
-
-          <!-- Novo: botão de análise (Passo 1) -->
           <button id="analyze-btn" class="small icon-btn" title="Analisar (features)" aria-label="Analisar gravação">🔬</button>
+          <!-- Novo botão: mostrar/ocultar pontos de features -->
+          <button id="show-points-btn" class="small icon-btn" title="Mostrar pontos de features" aria-label="Mostrar pontos">•</button>
         </div>
         <div class="player-audio">
           <audio id="audio-player" controls class="player-audio-element"></audio>
@@ -70,8 +70,13 @@
         <p id="status" class="status">Pronto</p>
       </div>
 
+      <!-- Container espectrograma com overlay -->
+      <div class="spectrogram-wrapper">
+        <canvas id="spectrogram" class="spectrogram"></canvas>
+        <canvas id="spectrogram-overlay" class="spectrogram-overlay overlay-canvas"></canvas>
+      </div>
+
       <canvas id="waveform" class="waveform"></canvas>
-      <canvas id="spectrogram" class="spectrogram"></canvas>
 
       <div id="processing-indicator" class="processing-indicator hidden">
         <div class="spinner"></div>
@@ -79,7 +84,7 @@
       </div>
     </section>
 
-    <!-- Nova coluna direita: Train Pool (Passo 1 UI) -->
+    <!-- Coluna direita: Train Pool -->
     <aside class="train-panel" id="train-panel" aria-label="Train pool">
       <div class="train-header">
         <div class="train-title">Train Pool</div>
@@ -97,16 +102,12 @@
   <script src="db.js"></script>
   <script src="config.js"></script>
   <script src="audio.js"></script>
-
   <script src="waveform.js"></script>
-
   <script src="recorder.js"></script>
   <script src="sessions.js"></script>
-
-  <!-- novo: analyzer (extrator de features) -->
   <script src="analyzer.js"></script>
-
-  <!-- UI para integração do analyzer (Passo 1) -->
   <script src="ui-analyzer.js"></script>
+  <!-- Novo: overlay de pontos -->
+  <script src="overlay-analyzer.js"></script>
 </body>
 </html>

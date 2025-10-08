@@ -1,8 +1,4 @@
-/* style.css — Versão atualizada (ajuste de largura da lateral esquerda)
-   Moved inline styles to classes for accessibility/cleanliness.
-   Adicionadas classes visuais para persistência de gravação e painel Train Pool.
-*/
-
+/* (Arquivo completo atualizado — diferença principal: classes .spectrogram-wrapper, .spectrogram-overlay, .overlay-canvas) */
 :root{
   --bg: #fafafa;
   --panel: #ffffff;
@@ -32,7 +28,7 @@ body {
   align-items: flex-start;
 }
 
-/* History panel (lateral esquerda) */
+/* Painel esquerdo (history) */
 .history-panel {
   width: auto;
   min-width: 220px;
@@ -48,7 +44,7 @@ body {
   overflow: hidden;
 }
 
-/* Train panel (nova, direita) */
+/* Painel direito (Train Pool) */
 .train-panel {
   width: 260px;
   min-width: 200px;
@@ -87,7 +83,25 @@ body {
 .train-list .train-item .meta { color:#666; font-size:12px; margin-left:6px; }
 .train-footer { margin-top:8px; color:#666; font-size:12px; }
 
-/* Spinner/persist badge */
+/* Backup row */
+.backup-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-top: 8px;
+  gap: 8px;
+}
+.backup-row .backup-label {
+  font-size: 12px;
+  color: #666;
+  padding-left: 4px;
+}
+.backup-row .backup-actions {
+  display: flex;
+  gap: 6px;
+}
+
+/* Persistência badges/spinner */
 .persist-spinner {
   display: inline-block;
   width: 12px;
@@ -124,7 +138,7 @@ body {
   margin-left: 6px;
 }
 
-/* Modal do analyzer (resumo) */
+/* Modal analyzer */
 .analyzer-modal {
   position: fixed;
   left: 50%;
@@ -156,7 +170,6 @@ body {
   justify-content:flex-end;
 }
 
-/* Restante do css (player, lists...) mantido como antes */
 .history-header {
   display:flex;
   justify-content:space-between;
@@ -210,7 +223,6 @@ body {
 
 .history-divider { height: 1px; margin: 6px 0; }
 
-/* Sessions list */
 .sessions-list {
   max-height: 240px;
   overflow-y: auto;
@@ -222,7 +234,6 @@ body {
   padding-right: 6px;
 }
 
-/* Recordings list (padronizado visualmente) */
 .recordings-list {
   flex:1;
   overflow-y:auto;
@@ -233,7 +244,6 @@ body {
   padding-right: 6px;
 }
 
-/* PADRONIZAÇÃO: recording-item similar a session-item */
 .recording-item {
   background: #fff;
   border-radius: 8px;
@@ -346,7 +356,12 @@ body {
   box-shadow: 0 10px 26px rgba(216,59,59,0.14);
 }
 
-.waveform, .spectrogram {
+/* Wrapper do espectrograma + overlay */
+.spectrogram-wrapper {
+  position: relative;
+  width: 100%;
+}
+.spectrogram {
   width: 100%;
   height: 180px;
   border-radius: 10px;
@@ -354,6 +369,28 @@ body {
   box-shadow: 0 4px 10px rgba(0,0,0,0.04);
   display: block;
   margin: 0 auto;
+}
+.spectrogram-overlay {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 180px;
+  pointer-events: none;
+  border-radius: 10px;
+}
+
+.waveform {
+  width: 100%;
+  height: 180px;
+  border-radius: 10px;
+  background: linear-gradient(180deg, #fff, #fbfbfb);
+  box-shadow: 0 4px 10px rgba(0,0,0,0.04);
+  display: block;
+  margin: 0 auto;
+}
+
+.overlay-canvas {
+  z-index: 5;
 }
 
 .processing-indicator {
@@ -388,7 +425,7 @@ body {
   .history-panel { width: 100%; max-width: none; min-width: 0; order: 2; height: auto; }
   .player-container { order: 1; }
   .train-panel { width: 100%; order: 3; max-width: none; min-width: 0; height: auto; }
-  .waveform, .spectrogram { height: 140px; }
+  .spectrogram, .spectrogram-overlay, .waveform { height: 140px; }
 }
 
 .session-item:focus, .recording-item:focus { outline: 2px solid rgba(123,63,228,0.12); outline-offset: 2px; }
