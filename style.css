@@ -429,3 +429,8 @@ body {
 }
 
 .session-item:focus, .recording-item:focus { outline: 2px solid rgba(123,63,228,0.12); outline-offset: 2px; }
+
+.icon-btn.active {
+  background: #ece5ff;
+  box-shadow: 0 0 0 2px rgba(123,63,228,0.25);
+}

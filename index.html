@@ -17,19 +17,16 @@
             <span class="icon" aria-hidden="true">💾</span>
             <span class="sr-only">Salvar sessão</span>
           </button>
-
           <button id="export-session-btn" class="small icon-btn" title="Exportar sessão" aria-label="Exportar sessão">
             <span class="icon" aria-hidden="true">⤓</span>
             <span class="sr-only">Exportar sessão</span>
           </button>
-
-            <label class="small file-label icon-btn" title="Importar sessão" aria-label="Importar sessão">
+          <label class="small file-label icon-btn" title="Importar sessão" aria-label="Importar sessão">
             <span class="icon" aria-hidden="true">📂</span>
             <input id="import-session-input" type="file" accept=".json" class="hidden">
             <span class="sr-only">Importar sessão</span>
           </label>
-
-          <label class="small file-label icon-btn" title="Importar gravação" aria-label="Importar gravação">
+            <label class="small file-label icon-btn" title="Importar gravação" aria-label="Importar gravação">
             <span class="icon" aria-hidden="true">🎵</span>
             <input id="import-recording-input" type="file" accept="audio/*" class="hidden">
             <span class="sr-only">Importar gravação</span>
@@ -61,8 +58,10 @@
           <button id="next-btn" class="control" title="Próxima" aria-label="Próxima">⏭</button>
           <button id="trim-audio-btn" class="small icon-btn" title="Trim silêncio" aria-label="Trim silêncio">✂️</button>
           <button id="analyze-btn" class="small icon-btn" title="Analisar (features)" aria-label="Analisar gravação">🔬</button>
-          <!-- Novo botão: mostrar/ocultar pontos de features -->
           <button id="show-points-btn" class="small icon-btn" title="Mostrar pontos de features" aria-label="Mostrar pontos">•</button>
+          <!-- Novos botões -->
+          <button id="show-rms-btn" class="small icon-btn" title="Mostrar linha RMS" aria-label="Mostrar RMS">∿</button>
+          <button id="segment-silence-btn" class="small icon-btn" title="Segmentar silêncio" aria-label="Segmentar silêncio">Σ</button>
         </div>
         <div class="player-audio">
           <audio id="audio-player" controls class="player-audio-element"></audio>
@@ -70,7 +69,6 @@
         <p id="status" class="status">Pronto</p>
       </div>
 
-      <!-- Container espectrograma com overlay -->
       <div class="spectrogram-wrapper">
         <canvas id="spectrogram" class="spectrogram"></canvas>
         <canvas id="spectrogram-overlay" class="spectrogram-overlay overlay-canvas"></canvas>
@@ -84,7 +82,6 @@
       </div>
     </section>
 
-    <!-- Coluna direita: Train Pool -->
     <aside class="train-panel" id="train-panel" aria-label="Train pool">
       <div class="train-header">
         <div class="train-title">Train Pool</div>
@@ -107,7 +104,6 @@
   <script src="sessions.js"></script>
   <script src="analyzer.js"></script>
   <script src="ui-analyzer.js"></script>
-  <!-- Novo: overlay de pontos -->
   <script src="overlay-analyzer.js"></script>
 </body>
 </html>

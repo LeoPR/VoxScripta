@@ -36,10 +36,6 @@
   };
 
   // Trim de silêncio (centralizado)
-  // threshold: limiar RMS por chunk
-  // chunkSizeMs: duração do chunk para medição de RMS
-  // minNonSilenceMs: janelinha de confirmação de som após o silêncio
-  // safetyPaddingMs: "sobra" de silêncio que mantemos antes do primeiro som para não cortar ataque
   window.appConfig.trim = {
     threshold: 0.01,
     chunkSizeMs: 10,
@@ -65,6 +61,14 @@
     sendToConsole: true
   };
 
+  // Analyzer (NOVO) — parâmetros para segmentação de silêncio / RMS
+  window.appConfig.analyzer = {
+    silenceRmsRatio: 0.12,     // limiar = maxRMS * silenceRmsRatio
+    smoothingFrames: 3,        // janela para suavizar RMS (média móvel)
+    minSilenceFrames: 5,       // duração mínima (frames) para aceitar silêncio
+    minSpeechFrames: 3         // duração mínima (frames) para aceitar fala
+  };
+
   // Mescla com window.processingOptions (se existir) para compatibilidade
   window.appConfig.getMergedProcessingOptions = function() {
     const proc = window.processingOptions || {};
@@ -75,7 +79,8 @@
       trim: Object.assign({}, window.appConfig.trim, proc.trim || {}),
       ui: Object.assign({}, window.appConfig.ui, proc.ui || {}),
       recording: Object.assign({}, window.appConfig.recording, proc.recording || {}),
-      telemetry: Object.assign({}, window.appConfig.telemetry, proc.telemetry || {})
+      telemetry: Object.assign({}, window.appConfig.telemetry, proc.telemetry || {}),
+      analyzer: Object.assign({}, window.appConfig.analyzer, proc.analyzer || {})
     };
   };
 
