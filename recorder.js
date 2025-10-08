@@ -173,6 +173,49 @@ async function persistRecording(blob, suggestedName) {
   return recordings.find(r => r && (r.id === tempId || r.id !== tempId && r.name === (suggestedName || rec.name))) || rec;
 }
 
+// Salva alterações de nome/metadata na memória e, se possível, no DB.
+// updatedRec: objeto com pelo menos id e os campos a atualizar (ex: { id, name })
+async function saveChangesToSessionRecording(updatedRec) {
+  try {
+    if (!updatedRec) return false;
+    // atualizar memória (recordings[])
+    for (let i = 0; i < recordings.length; i++) {
+      const r = recordings[i];
+      if (!r) continue;
+      // comparar por id (string or number)
+      if (String(r.id) === String(updatedRec.id)) {
+        recordings[i] = Object.assign({}, recordings[i], updatedRec);
+        break;
+      }
+    }
+    renderRecordingsList(recordings);
+
+    // se id for numérico, persistir alteração no DB
+    if (updatedRec.id !== undefined && updatedRec.id !== null && !String(updatedRec.id).startsWith('TEMP')) {
+      // tentar atualizar no DB se a API estiver disponível
+      if (typeof window.updateRecordingInDb === 'function' && typeof window.getRecordingById === 'function') {
+        try {
+          // obter entry atual do DB para manter blob/date caso não venham no updatedRec
+          const dbObj = await window.getRecordingById(updatedRec.id);
+          const toSave = Object.assign({}, dbObj || {}, updatedRec);
+          await window.updateRecordingInDb(toSave);
+          // opcional: re-carregar do DB (não obrigatório)
+          return true;
+        } catch (err) {
+          console.warn('saveChangesToSessionRecording: falha ao atualizar DB:', err);
+          return false;
+        }
+      }
+    }
+    return true;
+  } catch (err) {
+    console.error('saveChangesToSessionRecording erro:', err);
+    return false;
+  }
+}
+
+window.saveChangesToSessionRecording = saveChangesToSessionRecording;
+
 function renderSessionsList() {
   if (typeof window.renderSessionsList === 'function') {
     window.renderSessionsList();
@@ -331,6 +374,7 @@ function renderRecordingsList(list) {
         if (e.key === 'Enter') {
           const newVal = input.value;
           title.textContent = newVal;
+          // persist change (memória + DB)
           if (typeof saveChangesToSessionRecording === 'function') saveChangesToSessionRecording({ ...rec, name: newVal });
         }
       };

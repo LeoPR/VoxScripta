@@ -160,6 +160,21 @@ async function getRecordingById(id) {
     }
   });
 }
+async function updateRecordingInDb(obj) {
+  // obj: { id, name?, date?, blob? } - deve conter id para atualizar
+  const db = await openDb();
+  return new Promise((resolve, reject) => {
+    try {
+      const tx = db.transaction([STORE_RECORDINGS], 'readwrite');
+      const store = tx.objectStore(STORE_RECORDINGS);
+      const req = store.put(obj);
+      req.onsuccess = () => resolve(true);
+      req.onerror = () => reject(req.error);
+    } catch (err) {
+      reject(err);
+    }
+  });
+}
 async function deleteRecordingById(id) {
   const db = await openDb();
   return new Promise((resolve, reject) => {
@@ -265,6 +280,7 @@ async function deleteSessionFromDb(id) {
 window.openDb = openDb;
 window.saveRecordingToDbObj = saveRecordingToDbObj;
 window.getRecordingById = getRecordingById;
+window.updateRecordingInDb = updateRecordingInDb;
 window.deleteRecordingById = deleteRecordingById;
 window.getAllRecordingsFromDb = getAllRecordingsFromDb;
 window.saveSessionToDb = saveSessionToDb;
