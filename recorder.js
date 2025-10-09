@@ -422,6 +422,7 @@ function renderRecordingsList(list) {
 
 function selectRecordingInUI(idx, rec) {
   currentIdx = idx;
+
   if (animationId) { cancelAnimationFrame(animationId); animationId = null; }
   if (rec && rec.url) {
     audioPlayer.src = rec.url;
@@ -432,6 +433,9 @@ function selectRecordingInUI(idx, rec) {
     audioPlayer.load();
   }
   renderRecordingsList(recordings);
+  if (window.analyzerOverlay && typeof window.analyzerOverlay.redraw === "function") {
+    window.analyzerOverlay.redraw();
+  }
   if (rec && rec.blob) {
     if (typeof window.showWaveform === 'function') {
       try { window.showWaveform(rec.blob); } catch (_) {}
@@ -444,6 +448,7 @@ function selectRecordingInUI(idx, rec) {
     fetch(rec.url).then(r => r.blob()).then(b => processAndPlayBlobDelegator(b)).catch(()=>{});
   }
   if (typeof window.renderHistory === 'function') window.renderHistory(recordings, currentIdx);
+
 }
 
 async function selectSession(id) {
@@ -532,12 +537,25 @@ function drawSpectrogramPixels(srcWidth, srcHeight, pixels) {
   ctx.drawImage(off, 0, 0, srcWidth, srcHeight, 0, 0, visualWidth, visualHeight);
   spectrogramCanvas.style.display = 'block';
 
-  // Redimensionar overlay para coincidir
+  // Redimensionar overlay para coincidir (somente se necessário, pois mudar width/height limpa o canvas)
   if (spectrogramOverlay) {
-    spectrogramOverlay.width = spectrogramCanvas.width;
-    spectrogramOverlay.height = spectrogramCanvas.height;
-    spectrogramOverlay.style.width = spectrogramCanvas.style.width;
-    spectrogramOverlay.style.height = spectrogramCanvas.style.height;
+    const targetW = spectrogramCanvas.width;
+    const targetH = spectrogramCanvas.height;
+    const targetStyleW = spectrogramCanvas.style.width;
+    const targetStyleH = spectrogramCanvas.style.height;
+
+    const needResizeOverlay =
+      spectrogramOverlay.width !== targetW ||
+      spectrogramOverlay.height !== targetH ||
+      spectrogramOverlay.style.width !== targetStyleW ||
+      spectrogramOverlay.style.height !== targetStyleH;
+
+    if (needResizeOverlay) {
+      spectrogramOverlay.width = targetW;
+      spectrogramOverlay.height = targetH;
+      spectrogramOverlay.style.width = targetStyleW;
+      spectrogramOverlay.style.height = targetStyleH;
+    }
   }
 
   // Guardar meta para overlay (frames serão inferidos pelos features)
@@ -547,6 +565,13 @@ function drawSpectrogramPixels(srcWidth, srcHeight, pixels) {
     displayHeight: visualHeight,
     dpr
   };
+
+  // Reaplicar overlays ativos após atualizar o espectrograma/overlay
+  try {
+    if (window.analyzerOverlay && typeof window.analyzerOverlay.redraw === 'function') {
+      window.analyzerOverlay.redraw();
+    }
+  } catch (_) {}
 }
 
 window.onSelectRecording = function(idx) {
