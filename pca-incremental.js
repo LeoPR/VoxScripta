@@ -1,4 +1,4 @@
-// pca-incremental.js — agora usando a mesma segmentação de silêncio/fala do overlay
+// pca-incremental.js — agora usando segmentação do overlay + log1p nas bandas Mel
 (function(){
   'use strict';
 
@@ -164,18 +164,18 @@
   }
 
   // Normalização mínima: centróide Hz → [0..1] (divide por sampleRate/2)
-    function normalizeFeatureVector(vec, nMels, sampleRate){
-      // log1p nas bandas Mel
-      for (let m = 0; m < nMels; m++) {
-        vec[m] = Math.log1p(vec[m]);
-      }
-      if (!sampleRate) sampleRate = 16000;
-      const centroidIdx = nMels+1;
-      vec[centroidIdx] = vec[centroidIdx] / (sampleRate/2);
-      return vec;
+  function normalizeFeatureVector(vec, nMels, sampleRate){
+    // log1p nas bandas Mel
+    for (let m = 0; m < nMels; m++) {
+      vec[m] = Math.log1p(vec[m]);
     }
+    if (!sampleRate) sampleRate = 16000;
+    const centroidIdx = nMels+1;
+    vec[centroidIdx] = vec[centroidIdx] / (sampleRate/2);
+    return vec;
+  }
 
-  // -- NOVA gatherTrainFeatures usando segmentSilence global do overlay --
+  // -- gatherTrainFeatures usando segmentSilence global do overlay --
   async function gatherTrainFeatures() {
     const cfg = getCfg();
     const silenceFilterEnabled = !!cfg.silenceFilterEnabled;
@@ -305,20 +305,6 @@
 
     const data = new Float32Array(n*dims);
     for (let r=0;r<n;r++) data.set(vectors[r], r*dims);
-
-        // Debug: mostra estatísticas dos dados que vão para o PCA
-    let nCheck = Math.min(5, vectors.length);
-    for (let i = 0; i < nCheck; i++) {
-      console.log("Vetor treino PCA [", i, "]:", Array.from(vectors[i]).slice(0, 10), "...");
-    }
-    let allZero = true, allFinite = true;
-    for (let v of vectors) {
-      for (let x of v) {
-        if (x !== 0) allZero = false;
-        if (!Number.isFinite(x)) allFinite = false;
-      }
-    }
-    console.log("Todos zeros?", allZero, "Todos finitos?", allFinite, "Total frames para PCA:", vectors.length);
 
     return {
       data,

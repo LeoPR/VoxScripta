@@ -171,8 +171,7 @@
     const flat = featuresResult.features;
     const melDims = nMels;
     const rmsIndex = nMels;
-    const centroidIndex = nMels + 1; // (em Hz - não usamos diretamente para a trajetória mel)
-    // zcrIndex = nMels + 2 (não usado por enquanto)
+    const centroidIndex = nMels + 1;
 
     // Pré-calcular RMS e centróide em índice mel
     const rmsSeries = new Float32Array(frames);
@@ -225,8 +224,8 @@
       ctx.beginPath();
       for (let f=0; f<frames; f++){
         const x = (frames>1) ? (f * (dispW-1)/(frames-1)) : dispW/2;
-        const norm = smoothRms[f] / localMax; // 0..1
-        const y = (1 - norm) * (dispH-1); // topo = maior RMS
+        const norm = smoothRms[f] / localMax;
+        const y = (1 - norm) * (dispH-1);
         if (f===0) ctx.moveTo(x,y); else ctx.lineTo(x,y);
       }
       ctx.strokeStyle = 'rgba(255,50,50,0.85)';
