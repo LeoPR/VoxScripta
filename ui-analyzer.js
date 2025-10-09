@@ -1,13 +1,8 @@
 // ui-analyzer.js — versão instrumentada com diagnóstico pré e pós PCA.
 // Principais adições:
-//  - Coleta de estatísticas pré-PCA (usando pca-diagnostics.js)
-//  - Exibição de bloco "Diagnóstico (pré-PCA)" antes do treino
-//  - Exibição de bloco "Diagnóstico (pós-PCA)" após o treino com avisos
-//
-// OBS: Não alterei a lógica de treino do PCA (runIncrementalPCAOnTrainPool).
-// Apenas interfaciamento visual e publicação dos dados em window._pcaDiagnostics.
-//
-// Requisitos: pca-diagnostics.js deve ser carregado (script tag) antes do clique em PCA.
+//  - Expondo window.uiAnalyzer.setTrainPool(ids) para restaurar train pool de uma sessão
+//  - Substituição do botão "Rem" por ícone de lixeira (🗑️) na lista do Train Pool
+// OBS: alterações intencionais e mínimas; lógica original preservada.
 
 (function () {
   'use strict';
@@ -81,9 +76,10 @@
       left.appendChild(meta);
       item.appendChild(left);
       const right = document.createElement('div');
+      // substituir botão "Rem" por ícone lixeira (mínima mudança visual)
       const rem = document.createElement('button');
       rem.className = 'small';
-      rem.textContent = 'Rem';
+      rem.innerHTML = '🗑️';
       rem.title = 'Remover';
       rem.onclick = () => {
         const i = trainPool.indexOf(rid);
@@ -486,9 +482,23 @@
   }
 
   window.uiAnalyzer = window.uiAnalyzer || {};
+  // expor API mínima: getTrainPool e setTrainPool (para persistência/recuperação)
   window.uiAnalyzer.getTrainPool = () => Array.from(trainPool);
   window.uiAnalyzer.addToTrainPool = (id) => { if (id && trainPool.indexOf(id) === -1) { trainPool.push(id); renderTrainList(); } };
   window.uiAnalyzer.removeFromTrainPool = (id) => { const i = trainPool.indexOf(id); if (i >= 0) { trainPool.splice(i, 1); renderTrainList(); } };
+  window.uiAnalyzer.setTrainPool = (ids) => {
+    try {
+      if (!Array.isArray(ids)) return;
+      trainPool.length = 0;
+      for (const id of ids) {
+        if (id === undefined || id === null) continue;
+        if (trainPool.indexOf(id) === -1) trainPool.push(id);
+      }
+      renderTrainList();
+    } catch (e) {
+      console.warn('uiAnalyzer.setTrainPool falhou:', e);
+    }
+  };
 
   try { attachHandlers(); } catch(e){ console.warn('ui-analyzer init error:', e); }
 

@@ -3,6 +3,8 @@
 // - window.getWorkspaceRecordings()
 // - window.setWorkspaceRecordings(arr)
 // - window.appendWorkspaceRecording(rec)
+//
+// Persistência do trainPool adicionada: sessions salvas agora guardam trainPool (compatível retroativamente).
 
 // Expor selectedSessionId globalmente (compatibilidade)
 window.selectedSessionId = null;
@@ -22,8 +24,7 @@ function formatDate24(dateLike) {
 async function loadSessions() {
   try {
     if (typeof window.getAllSessionsFromDb === 'function') {
-      const sessions = await window.getAllSessionsFromDb();
-      window._sessionsCache = sessions || [];
+      window._sessionsCache = await window.getAllSessionsFromDb();
     } else if (typeof getAllSessionsFromDb === 'function') {
       window._sessionsCache = await getAllSessionsFromDb();
     } else {
@@ -114,7 +115,7 @@ function renderSessionsList() {
     };
     right.appendChild(editBtn);
 
-    // Exportar sessão
+    // Exportar sessão (verifica com segurança se função está disponível)
     const expBtn = document.createElement('button');
     expBtn.className = 'small';
     expBtn.innerHTML = '⤓';
@@ -122,10 +123,17 @@ function renderSessionsList() {
     expBtn.setAttribute('aria-label', 'Exportar sessão');
     expBtn.onclick = async (ev) => {
       ev.stopPropagation();
-      if (typeof window.exportSessionById === 'function') {
-        await window.exportSessionById(s.id);
-      } else {
-        await exportSessionById(s.id);
+      try {
+        if (typeof window.exportSessionById === 'function') {
+          await window.exportSessionById(s.id);
+        } else if (typeof exportSessionById === 'function') {
+          await exportSessionById(s.id);
+        } else {
+          alert('Função de exportação de sessão não disponível.');
+        }
+      } catch (err) {
+        console.error('Erro ao exportar sessão:', err);
+        alert('Erro ao exportar sessão. Veja o console para detalhes.');
       }
     };
     right.appendChild(expBtn);
@@ -208,6 +216,16 @@ async function selectSession(id) {
     window.recordings = newWorkspace;
     if (typeof window.renderRecordingsList === 'function') window.renderRecordingsList(window.recordings);
   }
+
+  // RESTAURAR trainPool caso a sessão tenha o campo
+  try {
+    if (sess && Array.isArray(sess.trainPool) && window.uiAnalyzer && typeof window.uiAnalyzer.setTrainPool === 'function') {
+      window.uiAnalyzer.setTrainPool(sess.trainPool);
+    }
+  } catch (e) {
+    console.warn('Falha ao restaurar trainPool da sessão:', e);
+  }
+
   renderSessionsList();
 }
 
@@ -241,7 +259,18 @@ async function onSaveSessionClicked() {
       if (r && typeof r.id === 'number') return r.id;
       return { id: r.id, name: r.name || `Gravação ${idx+1}`, date: r.date || new Date().toISOString(), blob: r.blob };
     });
-    const session = { name, date: Date.now(), recordings: recRefs };
+
+    // incluir trainPool atual (se disponível)
+    let trainPoolToSave = [];
+    try {
+      if (window.uiAnalyzer && typeof window.uiAnalyzer.getTrainPool === 'function') {
+        trainPoolToSave = window.uiAnalyzer.getTrainPool() || [];
+      }
+    } catch (_) {
+      trainPoolToSave = [];
+    }
+
+    const session = { name, date: Date.now(), recordings: recRefs, trainPool: Array.isArray(trainPoolToSave) ? trainPoolToSave : [] };
     if (typeof window.saveSessionToDb === 'function') {
       await window.saveSessionToDb(session);
     } else {
@@ -382,7 +411,7 @@ async function exportSessionById(sessionId) {
       recs.push({ id: r.id, name: r.name, date: r.date, blobBase64: base64 });
     }
   }
-  const out = { name: sess.name, date: sess.date, recordings: recs };
+  const out = { name: sess.name, date: sess.date, recordings: recs, trainPool: sess.trainPool || [] };
   const blob = new Blob([JSON.stringify(out, null, 2)], { type: 'application/json' });
   const a = document.createElement('a');
   a.href = URL.createObjectURL(blob);
@@ -510,7 +539,7 @@ async function exportSessionById(sessionId) {
 
         if (duplicateFound) { input.value = ''; return; }
 
-        const session = { name: parsed.name || `Sessão importada ${Date.now()}`, date: parsed.date || Date.now(), recordings: recRefs };
+        const session = { name: parsed.name || `Sessão importada ${Date.now()}`, date: parsed.date || Date.now(), recordings: recRefs, trainPool: parsed.trainPool || [] };
         if (typeof window.saveSessionToDb === 'function') await window.saveSessionToDb(session);
         else await saveSessionToDb(session);
 
@@ -564,7 +593,8 @@ async function exportAllBackup() {
         id: s.id,
         name: s.name,
         date: s.date,
-        recordings: s.recordings || []
+        recordings: s.recordings || [],
+        trainPool: s.trainPool || []
       }))
     };
 
@@ -703,7 +733,7 @@ async function importAllBackupFromFile(file) {
           }
         }
 
-        const newSession = { name: sess.name || `Sessão importada ${Date.now()}`, date: sess.date || Date.now(), recordings: refs };
+        const newSession = { name: sess.name || `Sessão importada ${Date.now()}`, date: sess.date || Date.now(), recordings: refs, trainPool: sess.trainPool || [] };
         if (typeof window.saveSessionToDb === 'function') await window.saveSessionToDb(newSession);
         else await saveSessionToDb(newSession);
 
@@ -721,42 +751,6 @@ async function importAllBackupFromFile(file) {
     alert('Erro ao importar backup. Veja o console para detalhes.');
   }
 }
-
-// Listeners para os botões de "Exportar tudo" e "Importar tudo"
-(function attachBackupButtons() {
-  try {
-    // Exportar tudo
-    const expAll = document.getElementById('export-all-btn');
-    if (expAll && !expAll.__backup_export_bound) {
-      expAll.addEventListener('click', () => {
-        exportAllBackup();
-      });
-      expAll.__backup_export_bound = true;
-    }
-
-    // Importar tudo
-    const impAllBtn = document.getElementById('import-all-btn');
-    const impAllInput = document.getElementById('import-all-input');
-    if (impAllBtn && !impAllBtn.__backup_import_btn_bound) {
-      impAllBtn.addEventListener('click', () => {
-        if (impAllInput) impAllInput.click();
-        else alert('Entrada de arquivo para importar backup não encontrada (import-all-input).');
-      });
-      impAllBtn.__backup_import_btn_bound = true;
-    }
-    if (impAllInput && !impAllInput.__backup_import_input_bound) {
-      impAllInput.addEventListener('change', async (ev) => {
-        const f = ev.target && ev.target.files && ev.target.files[0] ? ev.target.files[0] : null;
-        if (!f) return;
-        await importAllBackupFromFile(f);
-        try { impAllInput.value = ''; } catch(_) {}
-      });
-      impAllInput.__backup_import_input_bound = true;
-    }
-  } catch (err) {
-    console.warn('attachBackupButtons error:', err);
-  }
-})();
 
 // Expor funções e iniciar não-bloqueante
 window.loadSessions = loadSessions;
