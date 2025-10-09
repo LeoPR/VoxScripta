@@ -55,7 +55,12 @@
         this.nObs++;
         const n=this.nObs;
         for (let i=0;i<this.d;i++){
-          this.mean[i] += (x[i]-this.mean[i])/n;
+          const xi = x[i];
+          const mi = this.mean[i];
+          // proteger contra não-finitos na média
+          const diff = (Number.isFinite(xi) && Number.isFinite(mi)) ? (xi - mi) : 0;
+          const newMi = mi + diff/n;
+          this.mean[i] = Number.isFinite(newMi) ? newMi : mi;
         }
       },
       project(x){
@@ -64,7 +69,11 @@
           const base=c*this.d;
           let sum=0;
           for (let i=0;i<this.d;i++){
-            sum += this.components[base+i]*(x[i]-this.mean[i]);
+            const comp = this.components[base+i];
+            const xi = x[i];
+            const mi = this.mean[i];
+            const term = (Number.isFinite(comp) && Number.isFinite(xi) && Number.isFinite(mi)) ? comp*(xi-mi) : 0;
+            sum += term;
           }
           out[c]=sum;
         }
@@ -78,7 +87,11 @@
             const base = c*this.d;
             let sum=0;
             for (let i=0;i<this.d;i++){
-              sum += this.components[base+i]*(X[r*this.d+i]-this.mean[i]);
+              const comp = this.components[base+i];
+              const xi = X[r*this.d+i];
+              const mi = this.mean[i];
+              const term = (Number.isFinite(comp) && Number.isFinite(xi) && Number.isFinite(mi)) ? comp*(xi-mi) : 0;
+              sum += term;
             }
             out[r*this.k + c] = sum;
           }
@@ -92,19 +105,30 @@
     model.updateMean(x);
     const d = model.d;
     const xc = new Float32Array(d);
-    for (let i=0;i<d;i++) xc[i] = x[i]-model.mean[i];
+    for (let i=0;i<d;i++) {
+      const xi = x[i];
+      const mi = model.mean[i];
+      xc[i] = (Number.isFinite(xi) && Number.isFinite(mi)) ? (xi - mi) : 0;
+    }
 
     const lr = baseLr / Math.sqrt(model.nObs||1);
 
     for (let c=0;c<model.k;c++){
       const base = c*d;
       let y=0;
-      for (let i=0;i<d;i++) y += model.components[base+i]*xc[i];
       for (let i=0;i<d;i++){
         const w = model.components[base+i];
-        const update = lr * y * (xc[i] - y*w);
-        const nw = w + update;
-        model.components[base+i] = (Number.isFinite(nw) ? nw : w);
+        const xi = xc[i];
+        if (Number.isFinite(w) && Number.isFinite(xi)) y += w*xi;
+      }
+      for (let i=0;i<d;i++){
+        const w = model.components[base+i];
+        const xi = xc[i];
+        const upd = (Number.isFinite(lr) && Number.isFinite(y) && Number.isFinite(xi) && Number.isFinite(w))
+          ? (lr * y * (xi - y*w))
+          : 0;
+        const cand = w + upd;
+        model.components[base+i] = Number.isFinite(cand) ? cand : w; // proteção contra não-finitos
       }
     }
     if (model.nObs % reorthEvery === 0) {
@@ -163,16 +187,29 @@
     return { explained, cumulative };
   }
 
-  // Normalização mínima: centróide Hz → [0..1] (divide por sampleRate/2)
+  // Normalização mínima: centróide Hz → [0..1] (divide por sampleRate/2) + log1p nas bandas Mel
   function normalizeFeatureVector(vec, nMels, sampleRate){
-    // log1p nas bandas Mel
     for (let m = 0; m < nMels; m++) {
-      vec[m] = Math.log1p(vec[m]);
+      let v = vec[m];
+      // mel energies devem ser ≥0; se vier algo inválido, trata como 0 antes do log1p
+      if (!Number.isFinite(v) || v < 0) v = 0;
+      vec[m] = Math.log1p(v);
     }
     if (!sampleRate) sampleRate = 16000;
     const centroidIdx = nMels+1;
-    vec[centroidIdx] = vec[centroidIdx] / (sampleRate/2);
+    const c = vec[centroidIdx];
+    vec[centroidIdx] = Number.isFinite(c) ? (c / (sampleRate/2)) : 0;
+    // ZCR (nMels+2) fica como está; se for não-finito, zera
+    const zcrIdx = nMels+2;
+    if (!Number.isFinite(vec[zcrIdx])) vec[zcrIdx] = 0;
     return vec;
+  }
+
+  function isFiniteVector(vec){
+    for (let i=0;i<vec.length;i++){
+      if (!Number.isFinite(vec[i])) return false;
+    }
+    return true;
   }
 
   // -- gatherTrainFeatures usando segmentSilence global do overlay --
@@ -226,6 +263,7 @@
     let silenceTotal=0;
     let silenceKept=0;
     let speechFrames=0;
+    let invalidFrames=0;
 
     const silenceRmsRatio = cfg.silenceRmsRatio || 0.05;
     const minSilenceFrames = cfg.minSilenceFrames || 5;
@@ -240,12 +278,12 @@
       // Construir array de RMS
       const rmsArr = new Float32Array(frames);
       for (let f=0; f<frames; f++){
-        rmsArr[f] = flat[f*dims + rmsIdx];
+        const rv = flat[f*dims + rmsIdx];
+        rmsArr[f] = Number.isFinite(rv) ? rv : 0;
       }
 
       let segments = [];
       if (silenceFilterEnabled){
-        // Usa segmentSilence do overlay para obter segmentos [{startFrame, endFrame, type}]
         segments = segmentSilenceFn(rmsArr, globalMaxRms, {
           silenceRmsRatio,
           minSilenceFrames,
@@ -255,7 +293,6 @@
         segments = [{ startFrame: 0, endFrame: frames-1, type: "speech" }];
       }
 
-      // Coletar frames de fala e silêncio (pós-segmentação)
       const speechIdxs = [];
       const silenceIdxs = [];
       for (const seg of segments){
@@ -268,11 +305,12 @@
       silenceTotal += silenceIdxs.length;
       speechFrames += speechIdxs.length;
 
-      // Adicionar fala
+      // Adicionar fala (sanitizando)
       for (const f of speechIdxs){
         const base = f*dims;
         let vec = new Float32Array(flat.subarray(base, base+dims));
         vec = normalizeFeatureVector(vec, nMels, sampleRate);
+        if (!isFiniteVector(vec)) { invalidFrames++; continue; }
         vectors.push(vec);
       }
 
@@ -295,6 +333,7 @@
           const base = f*dims;
           let vec = new Float32Array(flat.subarray(base, base+dims));
           vec = normalizeFeatureVector(vec, nMels, sampleRate);
+          if (!isFiniteVector(vec)) { invalidFrames++; continue; }
           vectors.push(vec);
         }
       }
@@ -306,12 +345,16 @@
     const data = new Float32Array(n*dims);
     for (let r=0;r<n;r++) data.set(vectors[r], r*dims);
 
+    if (invalidFrames > 0) {
+      console.warn(`[PCA] Frames inválidos descartados: ${invalidFrames}`);
+    }
+
     return {
       data,
       n,
       d:dims,
       usedFrames: n,
-      skippedFrames: silenceTotal - silenceKept,
+      skippedFrames: (silenceTotal - silenceKept),
       framesSilenceTotal: silenceTotal,
       framesSilenceKept: silenceKept,
       framesSilenceRemoved: silenceTotal - silenceKept,

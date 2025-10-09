@@ -1,42 +1,9 @@
 // pca-diagnostics.js
 // Instrumentação para diagnosticar entradas do PCA incremental e resultado final.
-// NÃO altera o treinamento existente (pca-incremental.js). Apenas coleta estatísticas.
-// Expõe:
-//   window.pcaDiagnostics.collectPre(trainPoolIds)
-//   window.pcaDiagnostics.collectPost(model, preStats)
-//
-// Resultado salvo em window._pcaDiagnostics = { pre, post }
-//
-// Pré-PCA (retorno):
-// {
-//   recordings: nRecs,
-//   framesTotal,
-//   dims,
-//   nMels,
-//   rms: {min,max,mean,pctBelow:{'0.001':x,...}, maxGlobal},
-//   melSum: {min,max,mean},
-//   dimStats: {
-//      topVar: [{dim,var},...],
-//      lowVar: [{dim,var},...],
-//      zeroVarCount,
-//      meanVar,
-//      dimsWithZeroVar:[...optional limited],
-//   },
-//   sampleFrames: { indices:[f0,fMid,fLast], vectors:[Float32Array, ...] }, // cópia dos vetores
-//   warnings: [...],
-//   preparedAt: Date.now()
-// }
-//
-// Pós-PCA:
-// {
-//   componentNorms: { min,max,mean, list:[...] },
-//   projections: { frames:[{index, values:Float32Array}], allSmall:boolean },
-//   explained: Float32Array(k),
-//   cumulative: Float32Array(k),
-//   sumExplained: number,
-//   warnings: [...],
-//   preparedAt: Date.now()
-// }
+// Pequenas melhorias:
+//  - pre: registra sampleRate para normalização consistente no pós
+//  - post: projeta amostras com a MESMA normalização do treino (log1p + centroid/Nyquist)
+//  - post: ignora não-finitos ao calcular normas e projeções (robustez)
 
 (function(){
   'use strict';
@@ -67,6 +34,7 @@
     let dims = null;
     let nMels = null;
     let totalFrames = 0;
+    let sampleRate = 16000;
 
     let rmsMin = Infinity, rmsMax = -Infinity, rmsSum = 0;
     const rmsBelow = { '0.001':0, '0.005':0, '0.01':0, '0.02':0 };
@@ -79,19 +47,17 @@
 
     // Guardar até 3 frames amostrais: first, mid, last global
     const sampleVectors = [];
-    const sampleIndices = []; // índices globais
+    const sampleIndices = [];
     let globalFrameIndex = 0;
     let firstCaptured = false;
-    let midTarget = null; // será definido após saber total
+    let midTarget = null;
     let pendingMid = true;
 
-    // Precisamos primeiro saber total de frames para definir midTarget. Faremos em duas passagens:
     // (1) Passagem rápida para contar frames total
     for (const rec of recordings){
       const fr = await _ensureFeatures(rec);
       totalFrames += fr.shape.frames;
     }
-    // Definir midTarget
     midTarget = Math.floor(totalFrames / 2);
 
     // (2) Segunda passagem para coletar estatísticas
@@ -104,12 +70,12 @@
         console.warn('Dimensão inconsistente em diagnóstico, pulando gravação', rec.id);
         continue;
       }
+      // registrar sampleRate (primeiro válido)
+      if (fr.meta && fr.meta.sampleRate) sampleRate = fr.meta.sampleRate;
+
       const flat = fr.features;
       const frames = fr.shape.frames;
-      const localFramesStart = accumulatedFrames;
-      const localFramesEnd = accumulatedFrames + frames - 1;
 
-      // Alocar vetores de acumulação se ainda não
       if (!sumPerDim){
         sumPerDim = new Float64Array(dims);
         sumSqPerDim = new Float64Array(dims);
@@ -132,33 +98,32 @@
         // mel sum
         let melSum = 0;
         for (let m=0; m<nMels; m++){
-          melSum += flat[base + m];
+          const v = flat[base + m];
+          melSum += (Number.isFinite(v) ? v : 0);
         }
         if (melSum < melSumMin) melSumMin = melSum;
         if (melSum > melSumMax) melSumMax = melSum;
         melSumSum += melSum;
 
-        // variância
+        // variância (robustez: trata não-finitos como 0)
         for (let d=0; d<dims; d++){
           const v = flat[base + d];
-            sumPerDim[d] += v;
-            sumSqPerDim[d] += v*v;
+          const vv = Number.isFinite(v) ? v : 0;
+          sumPerDim[d] += vv;
+          sumSqPerDim[d] += vv*vv;
         }
 
-        // Captura de frames amostrais:
-        // first
+        // frames amostrais
         if (!firstCaptured){
           sampleVectors.push(new Float32Array(flat.subarray(base, base + dims)));
           sampleIndices.push(globalFrameIndex);
           firstCaptured = true;
         }
-        // middle (aproximar quando passar de midTarget)
         if (pendingMid && globalFrameIndex >= midTarget){
           sampleVectors.push(new Float32Array(flat.subarray(base, base + dims)));
           sampleIndices.push(globalFrameIndex);
           pendingMid = false;
         }
-        // last (sempre sobrescrevendo até o final; no final fica o último)
         if (globalFrameIndex === totalFrames -1){
           sampleVectors.push(new Float32Array(flat.subarray(base, base + dims)));
           sampleIndices.push(globalFrameIndex);
@@ -173,7 +138,6 @@
     const rmsMean = framesTotal ? rmsSum / framesTotal : 0;
     const melSumMean = framesTotal ? melSumSum / framesTotal : 0;
 
-    // Variância por dimensão
     const varPerDim = new Float64Array(dims);
     for (let d=0; d<dims; d++){
       if (framesTotal){
@@ -187,7 +151,6 @@
       }
     }
 
-    // Ordenar top e low variâncias
     const indices = Array.from({length:dims}, (_,i)=>i);
     indices.sort((a,b)=> varPerDim[b] - varPerDim[a]);
 
@@ -201,7 +164,6 @@
     const zeroVarCount = zeroVarDims.length;
     const meanVar = dims ? (varPerDim.reduce((a,b)=>a+b,0)/dims) : 0;
 
-    // Avisos
     const warnings = [];
     const pct005 = (rmsBelow['0.005']/framesTotal)*100;
     if (pct005 > 40){
@@ -219,6 +181,7 @@
       framesTotal,
       dims,
       nMels,
+      sampleRate, // adicionado para normalização consistente no pós
       rms: {
         min: rmsMin,
         max: rmsMax,
@@ -241,7 +204,7 @@
         lowVar: lowVarFiltered,
         zeroVarCount,
         meanVar,
-        dimsWithZeroVar: zeroVarDims.slice(0, 15) // limitar lista
+        dimsWithZeroVar: zeroVarDims.slice(0, 15)
       },
       sampleFrames: {
         indices: sampleIndices,
@@ -263,14 +226,15 @@
     const k = model.k;
     const d = model.d;
 
-    // Normas das componentes
+    // Normas das componentes (robustez: trata não-finitos como 0)
     const norms = new Float32Array(k);
     for (let c=0;c<k;c++){
       const base = c*d;
       let sum=0;
       for (let i=0;i<d;i++){
         const v = model.components[base+i];
-        sum += v*v;
+        const vv = Number.isFinite(v) ? v : 0;
+        sum += vv*vv;
       }
       norms[c] = Math.sqrt(sum);
     }
@@ -281,18 +245,45 @@
       if (n < minN) minN = n;
       if (n > maxN) maxN = n;
       sumN += n;
-      if (n < 1e-6) degenerate++;
+      if (!Number.isFinite(n) || n < 1e-6) degenerate++;
     }
 
-    // Projeções de frames amostrais
+    // Normalização igual ao treino (usa nMels e sampleRate do pré)
+    function normalizeLikeTrain(vec, nMels, sampleRate){
+      const out = new Float32Array(vec.length);
+      for (let i=0;i<vec.length;i++){
+        const v = vec[i];
+        out[i] = Number.isFinite(v) ? v : 0;
+      }
+      for (let m=0; m<nMels; m++){
+        let v = out[m];
+        if (!Number.isFinite(v) || v < 0) v = 0;
+        out[m] = Math.log1p(v);
+      }
+      const ny = (sampleRate||16000)/2;
+      const cIdx = nMels+1, zIdx = nMels+2;
+      out[cIdx] = Number.isFinite(out[cIdx]) ? (out[cIdx]/ny) : 0;
+      if (!Number.isFinite(out[zIdx])) out[zIdx] = 0;
+      return out;
+    }
+
+    // Projeções de frames amostrais (robustez)
     const projections = [];
     let allSmall = true;
+    const nMels = preStats.nMels || (d - 3);
+    const sr = preStats.sampleRate || 16000;
+
     for (let i=0;i<preStats.sampleFrames.vectors.length;i++){
-      const vec = preStats.sampleFrames.vectors[i];
-      const proj = model.project(vec);
-      // checar magnitude
+      const raw = preStats.sampleFrames.vectors[i];
+      const nvec = normalizeLikeTrain(raw, nMels, sr);
+      const proj = model.project(nvec);
+      // checar magnitude (robustez)
       let mag=0;
-      for (let j=0;j<proj.length;j++) mag += proj[j]*proj[j];
+      for (let j=0;j<proj.length;j++){
+        const v = proj[j];
+        if (!Number.isFinite(v)) { proj[j] = 0; }
+        mag += proj[j]*proj[j];
+      }
       if (mag > 1e-8) allSmall = false;
       projections.push({
         index: preStats.sampleFrames.indices[i],
@@ -304,11 +295,11 @@
     const explained = model.explainedVariance || new Float32Array(k);
     const cumulative = model.cumulativeVariance || new Float32Array(k);
     let sumExpl = 0;
-    for (let i=0;i<explained.length;i++) sumExpl += explained[i];
+    for (let i=0;i<explained.length;i++) sumExpl += (Number.isFinite(explained[i]) ? explained[i] : 0);
 
     const warnings = [];
     if (degenerate > 0){
-      warnings.push(`COMPONENTES DEGENERADAS: ${degenerate}/${k} (norma < 1e-6)`);
+      warnings.push(`COMPONENTES DEGENERADAS: ${degenerate}/${k} (norma < 1e-6 ou inválida)`);
     }
     if (allSmall){
       warnings.push('PROJEÇÕES QUASE NULAS: amostras projetadas com magnitude muito baixa');
@@ -320,9 +311,9 @@
     const post = {
       componentNorms: {
         list: norms,
-        min: minN,
-        max: maxN,
-        mean: k ? (sumN / k) : 0,
+        min: Number.isFinite(minN) ? minN : 0,
+        max: Number.isFinite(maxN) ? maxN : 0,
+        mean: Number.isFinite(sumN) ? (k ? (sumN / k) : 0) : 0,
         degenerate
       },
       projections: {
