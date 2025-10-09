@@ -13,37 +13,26 @@
       <div class="history-header">
         <div class="history-title">Controle de sessões</div>
         <div class="header-actions" role="toolbar" aria-label="Ações de sessão">
-          <button id="save-session-btn" class="small icon-btn" title="Salvar sessão" aria-label="Salvar sessão">
-            <span class="icon" aria-hidden="true">💾</span>
-            <span class="sr-only">Salvar sessão</span>
-          </button>
-          <button id="export-session-btn" class="small icon-btn" title="Exportar sessão" aria-label="Exportar sessão">
-            <span class="icon" aria-hidden="true">⤓</span>
-            <span class="sr-only">Exportar sessão</span>
-          </button>
+          <button id="save-session-btn" class="small icon-btn" title="Salvar sessão" aria-label="Salvar sessão">💾</button>
+          <button id="export-session-btn" class="small icon-btn" title="Exportar sessão" aria-label="Exportar sessão">⤓</button>
           <label class="small file-label icon-btn" title="Importar sessão" aria-label="Importar sessão">
-            <span class="icon" aria-hidden="true">📂</span>
+            📂
             <input id="import-session-input" type="file" accept=".json" class="hidden">
-            <span class="sr-only">Importar sessão</span>
           </label>
-            <label class="small file-label icon-btn" title="Importar gravação" aria-label="Importar gravação">
-            <span class="icon" aria-hidden="true">🎵</span>
+          <label class="small file-label icon-btn" title="Importar gravação" aria-label="Importar gravação">
+            🎵
             <input id="import-recording-input" type="file" accept="audio/*" class="hidden">
-            <span class="sr-only">Importar gravação</span>
           </label>
         </div>
-
         <div class="backup-row">
           <div class="backup-label">Backup geral</div>
           <div class="backup-actions">
             <button id="export-all-btn" class="icon-btn" title="Exportar tudo" aria-label="Exportar tudo">⤓</button>
             <button id="import-all-btn" class="icon-btn" title="Importar backup" aria-label="Importar backup">📁</button>
-            <label for="import-all-input" class="sr-only">Importar backup</label>
-            <input id="import-all-input" type="file" accept="application/json" class="hidden" title="Importar backup" aria-label="Importar backup" />
+            <input id="import-all-input" type="file" accept="application/json" class="hidden" />
           </div>
         </div>
       </div>
-
       <div id="sessions-list" class="sessions-list" aria-label="Lista de sessões"></div>
       <div class="history-divider"></div>
       <div id="recordings-list" class="recordings-list" role="list" aria-label="Lista de gravações"></div>
@@ -54,12 +43,11 @@
         <div class="controls">
           <button id="prev-btn" class="control" title="Anterior" aria-label="Anterior">⏮</button>
           <button id="record-btn" class="control record" title="Gravar" aria-label="Gravar">●</button>
-          <button id="stop-btn" class="control" disabled title="Parar" aria-label="Parar">■</button>
+            <button id="stop-btn" class="control" disabled title="Parar" aria-label="Parar">■</button>
           <button id="next-btn" class="control" title="Próxima" aria-label="Próxima">⏭</button>
           <button id="trim-audio-btn" class="small icon-btn" title="Trim silêncio" aria-label="Trim silêncio">✂️</button>
           <button id="analyze-btn" class="small icon-btn" title="Analisar (features)" aria-label="Analisar gravação">🔬</button>
           <button id="show-points-btn" class="small icon-btn" title="Mostrar pontos de features" aria-label="Mostrar pontos">•</button>
-          <!-- Novos botões -->
           <button id="show-rms-btn" class="small icon-btn" title="Mostrar linha RMS" aria-label="Mostrar RMS">∿</button>
           <button id="segment-silence-btn" class="small icon-btn" title="Segmentar silêncio" aria-label="Segmentar silêncio">Σ</button>
         </div>
@@ -86,12 +74,13 @@
       <div class="train-header">
         <div class="train-title">Train Pool</div>
         <div class="train-actions">
-          <button id="clear-train-btn" class="small icon-btn" title="Limpar lista">🧹</button>
+          <button id="run-pca-btn" class="small icon-btn" title="Rodar PCA incremental" aria-label="Rodar PCA">PCA</button>
+          <button id="clear-train-btn" class="small icon-btn" title="Limpar lista" aria-label="Limpar lista">🧹</button>
         </div>
       </div>
       <div id="train-list" class="train-list" aria-live="polite"></div>
       <div class="train-footer">
-        <small>Adicione gravações analisadas aqui para treinar em massa.</small>
+        <small>Adicione gravações e execute PCA para reduzir dimensionalidade.</small>
       </div>
     </aside>
   </div>
@@ -105,5 +94,7 @@
   <script src="analyzer.js"></script>
   <script src="ui-analyzer.js"></script>
   <script src="overlay-analyzer.js"></script>
+  <script src="pca-incremental.js"></script>
+  <script src="pca-diagnostics.js"></script>
 </body>
 </html>

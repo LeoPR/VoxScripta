@@ -35,7 +35,7 @@
     imageSmoothing: false
   };
 
-  // Trim de silêncio (centralizado)
+  // Trim de silêncio
   window.appConfig.trim = {
     threshold: 0.01,
     chunkSizeMs: 10,
@@ -43,33 +43,54 @@
     safetyPaddingMs: 10
   };
 
-  // Gravação / MediaRecorder defaults
+  // Gravação
   window.appConfig.recording = {
     mimeType: 'audio/webm',
     maxSilenceMs: 60000
   };
 
-  // UI / processamento indicator / telemetria
+  // UI
   window.appConfig.ui = {
     showProcessingIndicator: true,
     imageSmoothingEnabled: false
   };
 
-  // Telemetria / debug
+  // Telemetria
   window.appConfig.telemetry = {
     enabled: true,
     sendToConsole: true
   };
 
-  // Analyzer (NOVO) — parâmetros para segmentação de silêncio / RMS
+  // Analyzer (segmentação / RMS)
   window.appConfig.analyzer = {
-    silenceRmsRatio: 0.12,     // limiar = maxRMS * silenceRmsRatio
-    smoothingFrames: 3,        // janela para suavizar RMS (média móvel)
-    minSilenceFrames: 5,       // duração mínima (frames) para aceitar silêncio
-    minSpeechFrames: 3         // duração mínima (frames) para aceitar fala
+    silenceRmsRatio: 0.12,
+    smoothingFrames: 3,
+    minSilenceFrames: 5,
+    minSpeechFrames: 3
   };
 
-  // Mescla com window.processingOptions (se existir) para compatibilidade
+  // PCA Incremental
+  // Novos campos para filtragem de silêncio inicial
+  window.appConfig.pca = {
+    components: 8,
+    learningRate: 0.05,
+    maxEpochs: 1,
+    reorthogonalizeEvery: 3000,
+
+    // Filtragem de silêncio (primeiro passo incremental)
+    silenceFilterEnabled: true,
+    silenceRmsRatio: 0.05,       // frame é silêncio se RMS < maxRMSGlobal * ratio
+    minSilenceFrames: 5,         // funde micro-segmentos de silêncio muito curtos em fala
+    minSpeechFrames: 3,          // funde micro-segmentos de fala muito curtos em silêncio
+    keepSilenceFraction: 0.10,   // fração máxima de silêncio a manter após filtragem (0.10 = 10%)
+
+    // (Próximas etapas futuras: logMel, centroid normalization, z-score etc.)
+    logMel: false,
+    normalizeCentroid: false,
+    applyZScore: false
+  };
+
+  // Mescla
   window.appConfig.getMergedProcessingOptions = function() {
     const proc = window.processingOptions || {};
     return {
@@ -80,7 +101,8 @@
       ui: Object.assign({}, window.appConfig.ui, proc.ui || {}),
       recording: Object.assign({}, window.appConfig.recording, proc.recording || {}),
       telemetry: Object.assign({}, window.appConfig.telemetry, proc.telemetry || {}),
-      analyzer: Object.assign({}, window.appConfig.analyzer, proc.analyzer || {})
+      analyzer: Object.assign({}, window.appConfig.analyzer, proc.analyzer || {}),
+      pca: Object.assign({}, window.appConfig.pca, proc.pca || {})
     };
   };
 

@@ -320,7 +320,11 @@
     redraw,
     setShowPoints(v){ state.showPoints = !!v; if (btnPoints) btnPoints.classList.toggle('active', state.showPoints); redraw(); },
     setShowRms(v){ state.showRms = !!v; if (btnRms) btnRms.classList.toggle('active', state.showRms); redraw(); },
-    setShowSegments(v){ state.showSegments = !!v; if (btnSegment) btnSegment.classList.toggle('active', state.showSegments); redraw(); }
+    setShowSegments(v){ state.showSegments = !!v; if (btnSegment) btnSegment.classList.toggle('active', state.showSegments); redraw(); },
+    segmentSilence // <- exporta segmentSilence aqui também
   });
+
+  // Exporta segmentSilence globalmente para uso em outros módulos (ex: PCA incremental)
+  window.segmentSilence = segmentSilence;
 
 })();
