@@ -1,12 +1,6 @@
-// ui-analyzer.js — versão instrumentada com diagnóstico pré e pós PCA.
-// Principais adições:
-//  - Expondo window.uiAnalyzer.setTrainPool(ids) para restaurar train pool de uma sessão
-//  - Substituição do botão "Rem" por ícone de lixeira (🗑️) na lista do Train Pool
-//  - [Novo] Botão "PCA (batch diagnóstico)" no modal PCA para rodar pcaDataPrep + pcaBatch
-//  - Ao rodar PCA batch o modelo é salvo em window._pcaBatchModel e também em window._pcaModel,
-//    e o cache do visualizador é limpo para forçar atualização.
-//
-// OBS: alterações intencionais e mínimas; lógica original preservada.
+// ui-analyzer.js — adiciona seção "Segmentação usada no treino" no modal do PCA.
+// - incremental: mostra por gravação (contagens de segmentos/frames, incluídos/excluídos)
+// - batch diagnóstico: idem, quando disponível
 
 (function () {
   'use strict';
@@ -19,7 +13,6 @@
     return s.toFixed(3) + 's';
   }
 
-  /* ========== MODAL FEATURES (já existente) ========== */
   function createModal() {
     const existing = document.getElementById('analyzer-modal');
     if (existing) existing.remove();
@@ -80,7 +73,6 @@
       left.appendChild(meta);
       item.appendChild(left);
       const right = document.createElement('div');
-      // substituir botão "Rem" por ícone lixeira (mínima mudança visual)
       const rem = document.createElement('button');
       rem.className = 'small';
       rem.innerHTML = '🗑️';
@@ -192,199 +184,7 @@
     }
   }
 
-  /* ========== PCA HANDLER COM DIAGNÓSTICO ========== */
-
-  async function runPCAHandler() {
-    if (!window.runIncrementalPCAOnTrainPool) {
-      alert('pca-incremental.js não carregado.');
-      return;
-    }
-    if (!trainPool.length) {
-      alert('Train Pool vazio.');
-      return;
-    }
-
-    const modal = document.getElementById('pca-modal') || createPCAModal();
-    modal.querySelector('.pca-body').innerHTML = 'Preparando diagnóstico pré-PCA...';
-    modal.style.display = 'block';
-
-    let preDiag = null;
-    try {
-      if (!window.pcaDiagnostics || !window.pcaDiagnostics.collectPre){
-        modal.querySelector('.pca-body').innerHTML = '<span style="color:#c00;">pca-diagnostics.js não carregado.</span>';
-        return;
-      }
-      preDiag = await window.pcaDiagnostics.collectPre(trainPool);
-    } catch (errPre){
-      console.warn('Diagnóstico pré-PCA falhou:', errPre);
-      modal.querySelector('.pca-body').innerHTML =
-        `<div style="color:#c00;">Falha ao coletar diagnóstico pré-PCA: ${errPre.message||errPre}</div>`;
-      return;
-    }
-
-    // Render bloco pré-PCA + placeholder de progresso
-    modal.querySelector('.pca-body').innerHTML = renderPreDiagHTML(preDiag) +
-      `<div id="pca-train-progress" style="margin-top:10px;">Treinando PCA incremental...</div>`;
-
-    // Agora treina
-    let model = null;
-    try {
-      model = await window.runIncrementalPCAOnTrainPool((prog)=>{
-        const pct = Math.min(100, Math.round(prog*100));
-        const el = document.getElementById('pca-train-progress');
-        if (el) el.textContent = `Treinando PCA incremental... ${pct}%`;
-      });
-    } catch (errTrain){
-      console.error('Erro durante treino PCA:', errTrain);
-      const el = document.getElementById('pca-train-progress');
-      if (el) el.innerHTML = `<span style="color:red;">Erro no treino: ${errTrain.message||errTrain}</span>`;
-      return;
-    }
-
-    // Render seção de resultados PCA (já existente) + diag pós
-    try {
-      const ev = Array.from(model.explainedVariance).map(v=> Number.isFinite(v)?(v*100).toFixed(2)+'%':'0.00%');
-      const cum = Array.from(model.cumulativeVariance).map(v=> Number.isFinite(v)?(v*100).toFixed(2)+'%':'0.00%');
-
-      const resultHTML = `
-        <div style="margin-top:14px;border-top:1px solid #eee;padding-top:10px;">
-          <div><b>Componentes:</b> ${model.k}</div>
-          <div><b>Dimensão original:</b> ${model.d}</div>
-          <div><b>Frames usados:</b> ${model.framesUsed} &nbsp; <b>Ignorados (silêncio):</b> ${model.framesSkipped}</div>
-          <div style="margin-top:6px;"><b>Variância explicada (%):</b></div>
-          <div style="font-size:12px;">${ev.join(' | ')}</div>
-          <div style="margin-top:6px;"><b>Acumulada (%):</b></div>
-          <div style="font-size:12px;">${cum.join(' | ')}</div>
-          <canvas id="pca-variance-chart" width="480" height="140" style="margin-top:10px;border:1px solid #eee;border-radius:6px;"></canvas>
-        </div>
-      `;
-
-      const progressEl = document.getElementById('pca-train-progress');
-      if (progressEl) {
-        progressEl.insertAdjacentHTML('afterend', resultHTML);
-        progressEl.remove();
-      } else {
-        modal.querySelector('.pca-body').insertAdjacentHTML('beforeend', resultHTML);
-      }
-
-      drawVarianceChart(
-        document.getElementById('pca-variance-chart'),
-        model.explainedVariance,
-        model.cumulativeVariance
-      );
-
-      // Pós diag
-      let postDiag = null;
-      try {
-        postDiag = window.pcaDiagnostics.collectPost(model, preDiag);
-      } catch (errPost){
-        console.warn('Diagnóstico pós-PCA falhou:', errPost);
-      }
-
-      if (postDiag){
-        modal.querySelector('.pca-body').insertAdjacentHTML(
-          'beforeend',
-          renderPostDiagHTML(postDiag)
-        );
-      }
-
-      // Rodapé com instruções
-      modal.querySelector('.pca-body').insertAdjacentHTML(
-        'beforeend',
-        `<div style="margin-top:10px;font-size:12px;">
-           Modelo em <code>window._pcaModel</code> | Diagnósticos em <code>window._pcaDiagnostics</code><br/>
-           Projete: <code>window.pcaModel.transformFeaturesFlat(flat, frames, dims)</code>
-         </div>`
-      );
-
-    } catch (errRender){
-      console.error('Erro ao renderizar pós PCA:', errRender);
-    }
-  }
-
-  /* ---------- Novo: PCA Batch Diagnóstico (corrigido para expor modelo + limpar cache visual) ---------- */
-  async function runPCABatchHandler() {
-    try {
-      const modal = document.getElementById('pca-modal') || createPCAModal();
-      modal.style.display = 'block';
-      const body = modal.querySelector('.pca-body');
-
-      if (!window.pcaDataPrep || !window.pcaDataPrep.prepareDataForPCA) {
-        body.insertAdjacentHTML('beforeend', `<div style="color:#c00; margin-top:8px;">pca-data-prep.js não carregado.</div>`);
-        return;
-      }
-      if (!window.pcaBatch || !window.pcaBatch.computePCA) {
-        body.insertAdjacentHTML('beforeend', `<div style="color:#c00; margin-top:8px;">pca-batch.js não carregado.</div>`);
-        return;
-      }
-
-      const sectionId = 'pca-batch-section';
-      let section = document.getElementById(sectionId);
-      if (!section) {
-        section = document.createElement('div');
-        section.id = sectionId;
-        section.style.marginTop = '12px';
-        section.style.borderTop = '1px solid #eee';
-        section.style.paddingTop = '10px';
-        body.appendChild(section);
-      }
-      section.innerHTML = '<div>Rodando PCA batch (diagnóstico)...</div>';
-
-      // Preparar dados e rodar PCA batch
-      const res = await window.pcaDataPrep.prepareDataForPCA();
-      const k = Math.min(8, res.d || 8);
-      const model = window.pcaBatch.computePCA(res.dataMatrix, res.n, res.d, { k });
-
-      // Guardar modelo de batch e atualizar modelo "oficial" + limpar cache do visualizador
-      try {
-        model.__updatedAt = Date.now();
-        window._pcaBatchModel = model;
-        window._pcaModel = model; // unificar para visualizador
-
-        // limpar cache do visualizador para forçar recriar projeções
-        window._pcaVisualizerCache = {};
-        window._pcaVisualizerCache._lastModelUpdatedAt = model.__updatedAt;
-      } catch (e) {
-        console.warn('Falha ao armazenar modelo PCA batch globalmente:', e);
-      }
-
-      const ev = Array.from(model.explainedVariance).map(v=> Number.isFinite(v)?(v*100).toFixed(2)+'%':'0.00%');
-      const cum = Array.from(model.cumulativeVariance).map(v=> Number.isFinite(v)?(v*100).toFixed(2)+'%':'0.00%');
-
-      section.innerHTML = `
-        <div><b>PCA (batch)</b> — Diagnóstico</div>
-        <div style="font-size:12px; line-height:1.4; margin-top:4px;">
-          <b>n (frames):</b> ${res.n} &nbsp; <b>d:</b> ${res.d} &nbsp; <b>k:</b> ${k}<br/>
-          <b>Variância explicada (%):</b><br/>
-          <span style="font-size:12px;">${ev.join(' | ')}</span><br/>
-          <b>Acumulada (%):</b><br/>
-          <span style="font-size:12px;">${cum.join(' | ')}</span>
-        </div>
-        <canvas id="pca-batch-variance-chart" width="480" height="140" style="margin-top:8px;border:1px solid #eee;border-radius:6px;"></canvas>
-        <div style="margin-top:8px;font-size:12px;color:#666;">
-          Modelo salvo em <code>window._pcaBatchModel</code> e também em <code>window._pcaModel</code>. Cache do visualizador reiniciado.
-        </div>
-      `;
-
-      // Reusar o mesmo helper do incremental
-      drawVarianceChart(
-        document.getElementById('pca-batch-variance-chart'),
-        model.explainedVariance,
-        model.cumulativeVariance
-      );
-
-      console.log('[pca-batch] modelo salvo em window._pcaBatchModel / window._pcaModel', model);
-
-    } catch (err) {
-      console.error('runPCABatchHandler erro:', err);
-      try {
-        const body = (document.getElementById('pca-modal') || {}).querySelector ? document.getElementById('pca-modal').querySelector('.pca-body') : null;
-        if (body) body.insertAdjacentHTML('beforeend', `<div style="color:#c00;">Erro no PCA batch: ${err && err.message ? err.message : err}</div>`);
-      } catch(_) {}
-    }
-  }
-
-  /* ---------- Render Helpers para diagnóstico ---------- */
+  // ========= Helpers de renderização =========
 
   function renderPreDiagHTML(pre){
     if (!pre) return '<div style="color:#c00;">Sem dados pré-PCA.</div>';
@@ -452,7 +252,6 @@
     }[c]));
   }
 
-  /* ---------- Variance Chart (já existia) ---------- */
   function drawVarianceChart(canvas, explained, cumulative){
     if (!canvas) return;
     const ctx = canvas.getContext('2d');
@@ -531,7 +330,6 @@
     const actions = document.createElement('div');
     actions.className = 'modal-actions';
 
-    // [Novo] Botão PCA batch diagnóstico
     const batchBtn = document.createElement('button');
     batchBtn.className = 'small';
     batchBtn.textContent = 'PCA (batch diagnóstico)';
@@ -551,7 +349,238 @@
     return m;
   }
 
-  /* ---------- Handlers / Inicialização ---------- */
+  // ========= Nova seção: Segmentação do treino =========
+
+  function renderSegmentsSummaryHTML(model) {
+    const summary = model && model.segmentsSummary;
+    if (!summary || !Object.keys(summary).length) return '';
+    const recs = (typeof window.getWorkspaceRecordings === 'function') ? (window.getWorkspaceRecordings() || []) : (window.recordings || []);
+    const nameOf = (id) => {
+      const r = recs.find(rr => rr && String(rr.id) === String(id));
+      return r ? (r.name || String(id)) : String(id);
+    };
+
+    let totalSelected = 0, totalSpeechFrames = 0, totalSilenceFrames = 0, totalKeptSilence = 0;
+    const items = Object.keys(summary).map(id => {
+      const s = summary[id] || {};
+      totalSelected += s.selectedFrames || 0;
+      totalSpeechFrames += s.speechFrames || 0;
+      totalSilenceFrames += s.silenceFrames || 0;
+      totalKeptSilence += s.keptSilenceFrames || 0;
+      return `
+        <li style="margin:2px 0;">
+          <b>${escapeHTML(nameOf(id))}</b> —
+          segs fala: ${s.speechSegmentsCount||0}, segs silêncio: ${s.silenceSegmentsCount||0} |
+          frames fala (antes filtros): ${s.speechFrames||0} |
+          silêncio (antes): ${s.silenceFrames||0} |
+          selecionados p/ treino: ${s.selectedFrames||0}${(s.keptSilenceFrames?` (silêncio mantido: ${s.keptSilenceFrames})`:'')}
+        </li>
+      `;
+    }).join('');
+
+    return `
+      <div style="margin-top:14px;border-top:1px solid #eee;padding-top:10px;">
+        <h4 style="margin:0 0 6px 0;font-size:14px;">Segmentação usada no treino (por gravação)</h4>
+        <div style="font-size:12px;line-height:1.5;">
+          <ul style="margin:0 0 6px 16px; padding:0;">
+            ${items}
+          </ul>
+          <div style="color:#444;">
+            <b>Totais:</b> selecionados: ${totalSelected} | fala (pré-filtros): ${totalSpeechFrames} | silêncio (pré-filtros): ${totalSilenceFrames} | silêncio mantido: ${totalKeptSilence}
+          </div>
+        </div>
+      </div>
+    `;
+  }
+
+  // ========= PCA handlers =========
+
+  async function runPCAHandler() {
+    if (!window.runIncrementalPCAOnTrainPool) {
+      alert('pca-incremental.js não carregado.');
+      return;
+    }
+    if (!trainPool.length) {
+      alert('Train Pool vazio.');
+      return;
+    }
+
+    const modal = document.getElementById('pca-modal') || createPCAModal();
+    modal.querySelector('.pca-body').innerHTML = 'Preparando diagnóstico pré-PCA...';
+    modal.style.display = 'block';
+
+    let preDiag = null;
+    try {
+      if (!window.pcaDiagnostics || !window.pcaDiagnostics.collectPre){
+        modal.querySelector('.pca-body').innerHTML = '<span style="color:#c00;">pca-diagnostics.js não carregado.</span>';
+        return;
+      }
+      preDiag = await window.pcaDiagnostics.collectPre(trainPool);
+    } catch (errPre){
+      console.warn('Diagnóstico pré-PCA falhou:', errPre);
+      modal.querySelector('.pca-body').innerHTML =
+        `<div style="color:#c00;">Falha ao coletar diagnóstico pré-PCA: ${errPre.message||errPre}</div>`;
+      return;
+    }
+
+    modal.querySelector('.pca-body').innerHTML = renderPreDiagHTML(preDiag) +
+      `<div id="pca-train-progress" style="margin-top:10px;">Treinando PCA incremental...</div>`;
+
+    let model = null;
+    try {
+      model = await window.runIncrementalPCAOnTrainPool((prog)=>{
+        const pct = Math.min(100, Math.round(prog*100));
+        const el = document.getElementById('pca-train-progress');
+        if (el) el.textContent = `Treinando PCA incremental... ${pct}%`;
+      });
+    } catch (errTrain){
+      console.error('Erro durante treino PCA:', errTrain);
+      const el = document.getElementById('pca-train-progress');
+      if (el) el.innerHTML = `<span style="color:red;">Erro no treino: ${errTrain.message||errTrain}</span>`;
+      return;
+    }
+
+    try {
+      const ev = Array.from(model.explainedVariance).map(v=> Number.isFinite(v)?(v*100).toFixed(2)+'%':'0.00%');
+      const cum = Array.from(model.cumulativeVariance).map(v=> Number.isFinite(v)?(v*100).toFixed(2)+'%':'0.00%');
+
+      const resultHTML = `
+        <div style="margin-top:14px;border-top:1px solid #eee;padding-top:10px;">
+          <div><b>Componentes:</b> ${model.k}</div>
+          <div><b>Dimensão original:</b> ${model.d}</div>
+          <div><b>Frames usados:</b> ${model.framesUsed} &nbsp; <b>Ignorados (silêncio):</b> ${model.framesSkipped}</div>
+          <div style="margin-top:6px;"><b>Variância explicada (%):</b></div>
+          <div style="font-size:12px;">${ev.join(' | ')}</div>
+          <div style="margin-top:6px;"><b>Acumulada (%):</b></div>
+          <div style="font-size:12px;">${cum.join(' | ')}</div>
+          <canvas id="pca-variance-chart" width="480" height="140" style="margin-top:10px;border:1px solid #eee;border-radius:6px;"></canvas>
+        </div>
+      `;
+
+      const progressEl = document.getElementById('pca-train-progress');
+      if (progressEl) {
+        progressEl.insertAdjacentHTML('afterend', resultHTML);
+        progressEl.remove();
+      } else {
+        modal.querySelector('.pca-body').insertAdjacentHTML('beforeend', resultHTML);
+      }
+
+      drawVarianceChart(
+        document.getElementById('pca-variance-chart'),
+        model.explainedVariance,
+        model.cumulativeVariance
+      );
+
+      // Pós diag
+      let postDiag = null;
+      try {
+        postDiag = window.pcaDiagnostics.collectPost(model, preDiag);
+      } catch (errPost){
+        console.warn('Diagnóstico pós-PCA falhou:', errPost);
+      }
+      if (postDiag){
+        modal.querySelector('.pca-body').insertAdjacentHTML(
+          'beforeend',
+          renderPostDiagHTML(postDiag)
+        );
+      }
+
+      // Nova seção: Segmentação usada no treino
+      const segHTML = renderSegmentsSummaryHTML(model);
+      if (segHTML) {
+        modal.querySelector('.pca-body').insertAdjacentHTML('beforeend', segHTML);
+      }
+
+      // Rodapé
+      modal.querySelector('.pca-body').insertAdjacentHTML(
+        'beforeend',
+        `<div style="margin-top:10px;font-size:12px;">
+           Modelo em <code>window._pcaModel</code> | Diagnósticos em <code>window._pcaDiagnostics</code><br/>
+           Projete: <code>window.pcaModel.transformFeaturesFlat(flat, frames, dims)</code>
+         </div>`
+      );
+
+    } catch (errRender){
+      console.error('Erro ao renderizar pós PCA:', errRender);
+    }
+  }
+
+  async function runPCABatchHandler() {
+    try {
+      const modal = document.getElementById('pca-modal') || createPCAModal();
+      modal.style.display = 'block';
+      const body = modal.querySelector('.pca-body');
+
+      if (!window.pcaDataPrep || !window.pcaDataPrep.prepareDataForPCA) {
+        body.insertAdjacentHTML('beforeend', `<div style="color:#c00; margin-top:8px;">pca-data-prep.js não carregado.</div>`);
+        return;
+      }
+      if (!window.pcaBatch || !window.pcaBatch.computePCA) {
+        body.insertAdjacentHTML('beforeend', `<div style="color:#c00; margin-top:8px;">pca-batch.js não carregado.</div>`);
+        return;
+      }
+
+      const sectionId = 'pca-batch-section';
+      let section = document.getElementById(sectionId);
+      if (!section) {
+        section = document.createElement('div');
+        section.id = sectionId;
+        section.style.marginTop = '12px';
+        section.style.borderTop = '1px solid #eee';
+        section.style.paddingTop = '10px';
+        body.appendChild(section);
+      }
+      section.innerHTML = '<div>Rodando PCA batch (diagnóstico)...</div>';
+
+      const res = await window.pcaDataPrep.prepareDataForPCA();
+      const k = Math.min(8, res.d || 8);
+      const model = window.pcaBatch.computePCA(res.dataMatrix, res.n, res.d, { k });
+
+      // anexar segmento para UI e tornar "oficial"
+      try {
+        model.segmentsSummary = res.segmentsSummary || {};
+        model.__updatedAt = Date.now();
+        window._pcaBatchModel = model;
+        window._pcaModel = model;
+        window._pcaVisualizerCache = {};
+        window._pcaVisualizerCache._lastModelUpdatedAt = model.__updatedAt;
+      } catch (e) {}
+
+      const ev = Array.from(model.explainedVariance).map(v=> Number.isFinite(v)?(v*100).toFixed(2)+'%':'0.00%');
+      const cum = Array.from(model.cumulativeVariance).map(v=> Number.isFinite(v)?(v*100).toFixed(2)+'%':'0.00%');
+
+      section.innerHTML = `
+        <div><b>PCA (batch)</b> — Diagnóstico</div>
+        <div style="font-size:12px; line-height:1.4; margin-top:4px;">
+          <b>n (frames):</b> ${res.n} &nbsp; <b>d:</b> ${res.d} &nbsp; <b>k:</b> ${k}<br/>
+          <b>Variância explicada (%):</b><br/>
+          <span style="font-size:12px;">${ev.join(' | ')}</span><br/>
+          <b>Acumulada (%):</b><br/>
+          <span style="font-size:12px;">${cum.join(' | ')}</span>
+        </div>
+        <canvas id="pca-batch-variance-chart" width="480" height="140" style="margin-top:8px;border:1px solid #eee;border-radius:6px;"></canvas>
+      `;
+
+      drawVarianceChart(
+        document.getElementById('pca-batch-variance-chart'),
+        model.explainedVariance,
+        model.cumulativeVariance
+      );
+
+      // Segmentação usada no batch
+      const segHTML = renderSegmentsSummaryHTML(model);
+      if (segHTML) section.insertAdjacentHTML('beforeend', segHTML);
+
+      console.log('[pca-batch] modelo salvo em window._pcaBatchModel / window._pcaModel', model);
+
+    } catch (err) {
+      console.error('runPCABatchHandler erro:', err);
+      try {
+        const body = (document.getElementById('pca-modal') || {}).querySelector ? document.getElementById('pca-modal').querySelector('.pca-body') : null;
+        if (body) body.insertAdjacentHTML('beforeend', `<div style="color:#c00;">Erro no PCA batch: ${err && err.message ? err.message : err}</div>`);
+      } catch(_) {}
+    }
+  }
 
   function attachHandlers() {
     const analyzeBtn = document.getElementById('analyze-btn');
@@ -577,7 +606,6 @@
   }
 
   window.uiAnalyzer = window.uiAnalyzer || {};
-  // expor API mínima: getTrainPool e setTrainPool (para persistência/recuperação)
   window.uiAnalyzer.getTrainPool = () => Array.from(trainPool);
   window.uiAnalyzer.addToTrainPool = (id) => { if (id && trainPool.indexOf(id) === -1) { trainPool.push(id); renderTrainList(); } };
   window.uiAnalyzer.removeFromTrainPool = (id) => { const i = trainPool.indexOf(id); if (i >= 0) { trainPool.splice(i, 1); renderTrainList(); } };

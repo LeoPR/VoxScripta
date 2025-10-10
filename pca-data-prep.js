@@ -1,12 +1,16 @@
 // pca-data-prep.js
 // Preparador de matriz para PCA / clustering a partir do Train Pool.
-// Alterações: filtros robustos de fala (RMS absoluto + mel-sum relativo), normalização de scalars, clipping e z-score opcional.
+// Adição: retorna segmentsSummary por gravação (contagens de segmentos/frames de fala e silêncio, frames selecionados e silêncio mantido).
 //
 // Expor window.pcaDataPrep.prepareDataForPCA(trainIds?, options?) e buildContextVector.
 //
 // Uso:
 //   const res = await window.pcaDataPrep.prepareDataForPCA();
-//   // res: { dataMatrix: Float32Array, n, d, meta, perRecordingCounts, framesIndexMap }
+//   // res: {
+//   //   dataMatrix: Float32Array, n, d, meta,
+//   //   perRecordingCounts, framesIndexMap,
+//   //   segmentsSummary: { [recId]: { speechSegmentsCount, silenceSegmentsCount, speechFrames, silenceFrames, selectedFrames, keptSilenceFrames } }
+//   // }
 
 (function(){
   'use strict';
@@ -52,8 +56,6 @@
   }
 
   function buildContextVector(flat, frames, dims, t, contextWindow) {
-    // concatena frames [t - contextWindow ... t + contextWindow]
-    // se fora do range, usa zeros
     if (contextWindow <= 0) return new Float32Array(flat.subarray(t * dims, t * dims + dims));
     const width = 2 * contextWindow + 1;
     const out = new Float32Array(width * dims);
@@ -73,8 +75,6 @@
   }
 
   function computeZScoreMatrix(rows, n, d, scope, nMels) {
-    // rows: Array of Float32Array vectors length d
-    // scope: 'mel' -> only first nMels are standardized; 'all' -> all dims
     const means = new Float64Array(d);
     const m2 = new Float64Array(d);
     let count = 0;
@@ -125,16 +125,14 @@
       maxFramesPerRecording: 800,
       keepSilenceFraction: (defaultPcaCfg.keepSilenceFraction !== undefined) ? defaultPcaCfg.keepSilenceFraction : 0.0,
       applyZScore: true,
-      zscoreScope: 'all', // normalize all dims by default
-      contextWindow: 0, // 0 = no stacking
+      zscoreScope: 'all',
+      contextWindow: 0,
       sampleLimitTotal: 20000,
       clampAbsValue: 1e3,
 
-      // NOVOS filtros robustos de fala:
-      // - minRmsAbsolute: limiar absoluto adicional aos relativos (em RMS linear de frame)
-      // - minMelSumRatio: descarta frames com soma das bandas mel < (ratio * max mel-sum da gravação)
-      minRmsAbsolute: 0.002, // seguro; ajuste conforme seu material
-      minMelSumRatio: 0.02   // 2% do máximo local — evita frames todos-zero
+      // Filtros robustos de fala:
+      minRmsAbsolute: 0.002,
+      minMelSumRatio: 0.02
     }, options || {});
 
     const trainPoolIds = Array.isArray(trainIds) && trainIds.length ? trainIds
@@ -148,7 +146,7 @@
     const selectedRecs = trainPoolIds.map(id => recs.find(r => r && String(r.id) === String(id))).filter(Boolean);
     if (!selectedRecs.length) throw new Error('Nenhuma gravação válida encontrada no Train Pool.');
 
-    // descobrir globalMaxRms (usado pelos segmentSilence)
+    // descobrir globalMaxRms
     let globalMaxRms = 0;
     const collectedFeatures = []; // {rec, fr}
     let dims = null;
@@ -182,6 +180,7 @@
     const useSeg = opts.useSegmentSpeech && typeof segFn === 'function';
 
     const perRecordingCounts = new Map();
+    const segmentsSummary = {}; // por recId (string)
     const selectedVectors = [];
     const framesIndexMap = [];
 
@@ -190,7 +189,7 @@
       const frames = fr.shape.frames;
       const rmsIdx = nMels;
 
-      // Construir arrays auxiliares por gravação
+      // Arrays auxiliares
       const rmsArr = new Float32Array(frames);
       const melSumArr = new Float32Array(frames);
       let maxMelSumLocal = 0;
@@ -208,11 +207,19 @@
         if (ms > maxMelSumLocal) maxMelSumLocal = ms;
       }
 
-      // Se a gravação é praticamente silêncio inteiro, ignore para não gerar zeros
+      // ignora gravação silenciosa
       const localMaxRms = Math.max(...rmsArr);
       if (!Number.isFinite(localMaxRms) || localMaxRms <= 1e-9) {
         console.warn('pca-data-prep: gravação ignorada (RMS máximo ~0):', rec && rec.id);
         perRecordingCounts.set(rec.id, 0);
+        segmentsSummary[String(rec.id)] = {
+          speechSegmentsCount: 0,
+          silenceSegmentsCount: 0,
+          speechFrames: 0,
+          silenceFrames: frames,
+          selectedFrames: 0,
+          keptSilenceFrames: 0
+        };
         continue;
       }
 
@@ -227,20 +234,28 @@
 
       const speechIdxs = [];
       const silenceIdxs = [];
+      let speechSegmentsCount = 0;
+      let silenceSegmentsCount = 0;
       for (const seg of segments) {
-        for (let f = seg.startFrame; f <= seg.endFrame; f++) {
-          if (f < 0 || f >= frames) continue;
-          if (seg.type === 'speech') speechIdxs.push(f);
-          else silenceIdxs.push(f);
+        if (seg.type === 'speech') {
+          speechSegmentsCount++;
+          for (let f = seg.startFrame; f <= seg.endFrame; f++) {
+            if (f >= 0 && f < frames) speechIdxs.push(f);
+          }
+        } else {
+          silenceSegmentsCount++;
+          for (let f = seg.startFrame; f <= seg.endFrame; f++) {
+            if (f >= 0 && f < frames) silenceIdxs.push(f);
+          }
         }
       }
 
-      // Limiar final de RMS (combina relativo global e absoluto)
+      // thresholds finais
       const thrRmsRelative = (opts.rmsRatioThreshold || 0.0) * safeGlobalMaxRms;
       const thrRms = Math.max(thrRmsRelative, opts.minRmsAbsolute || 0);
       const thrMelSum = (opts.minMelSumRatio || 0) * (maxMelSumLocal || 1);
 
-      // Opcional: manter silêncio (fracionário) — mas aqui é 0 por padrão
+      // manter fração de silêncio (opcional)
       const chosenSilence = [];
       if (opts.keepSilenceFraction > 0 && silenceIdxs.length > 0) {
         const totalLocal = silenceIdxs.length + speechIdxs.length;
@@ -254,7 +269,7 @@
       let candFrames = speechIdxs.concat(chosenSilence);
       candFrames.sort((a,b) => a - b);
 
-      // Aplicar filtros robustos (RMS e mel-sum)
+      // filtros robustos (RMS e mel-sum)
       candFrames = candFrames.filter(f => {
         const r = rmsArr[f];
         const ms = melSumArr[f];
@@ -272,7 +287,7 @@
         candFrames = sampled;
       }
 
-      // context stacking + normalização/log e push
+      // context + normalizações
       let added = 0;
       for (const fIdx of candFrames) {
         const vec = buildContextVector(flat, frames, dims, fIdx, Math.max(0, Math.floor(opts.contextWindow)));
@@ -282,8 +297,7 @@
           if (!Number.isFinite(v) || v < 0) v = 0;
           vec[m] = Math.log1p(v);
         }
-
-        // Normalização dos scalars
+        // normalização dos scalars
         if (vec.length > nMels) {
           const origRms = vec[nMels];
           const safeLocalMaxRms = Math.max(localMaxRms, 1e-12);
@@ -309,7 +323,17 @@
         added++;
         if (selectedVectors.length >= opts.sampleLimitTotal) break;
       }
+
       perRecordingCounts.set(rec.id, added);
+      segmentsSummary[String(rec.id)] = {
+        speechSegmentsCount,
+        silenceSegmentsCount,
+        speechFrames: speechIdxs.length,
+        silenceFrames: silenceIdxs.length,
+        selectedFrames: added,
+        keptSilenceFrames: chosenSilence.length
+      };
+
       if (selectedVectors.length >= opts.sampleLimitTotal) break;
     }
 
@@ -346,7 +370,8 @@
       d: finalDim,
       meta,
       perRecordingCounts: Object.fromEntries(perRecordingCounts),
-      framesIndexMap
+      framesIndexMap,
+      segmentsSummary
     };
   }
 

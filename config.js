@@ -43,12 +43,11 @@
     safetyPaddingMs: 10,
 
     // NOVO: integração com segmentador e pré/pós-roll configuráveis
-    // Etapa 1: segmentador ligado, pré/pós-roll = 0 (ajuste depois)
     useSegmenter: true,
-    preRollFraction: 0.0,   // depois ajuste para 0.05 (5%) se quiser “um pouquinho” antes
-    postRollFraction: 0.0,  // pode ajustar para 0.02 por ex., se desejar
-    minPreRollMs: 0,        // mínimo absoluto para pré-roll, em ms
-    minPostRollMs: 0        // mínimo absoluto para pós-roll, em ms
+    preRollFraction: 0.0,
+    postRollFraction: 0.0,
+    minPreRollMs: 0,
+    minPostRollMs: 0
   };
 
   // Gravação
@@ -77,19 +76,34 @@
     minSpeechFrames: 3
   };
 
-  // PCA Incremental
+  // PCA Incremental (novos parâmetros para estabilidade e alertas)
   window.appConfig.pca = {
     components: 8,
-    learningRate: 0.05,
+    learningRate: 0.05,            // base learning rate
+    lrDecayFactor: 1.0,           // multiplicador adicional (1.0 = sem mudança)
+    lrPower: 0.5,                 // lr = base / (nObs^lrPower), default sqrt -> 0.5
     maxEpochs: 1,
     reorthogonalizeEvery: 3000,
 
-    // Filtragem de silêncio (incremental)
+    // fallback / robustez
+    minFramesForBatchFallback: 30, // se menos de N frames, usar PCA batch (determinístico) para inicializar/treinar
+    minFramesForGood: 200,         // se menor, emitir alerta de poucas amostras
+    degenerateThreshold: 1e-6,     // norma menor que isto => degenerada
+    replaceDegenerateWithBatch: true, // se degeneradas, substituir componentes pelo PCA batch inteiro
+
+    // seed para inicialização determinística (null ou número). Se definido, a inicialização das componentes é determinística
+    initSeed: null,
+
+    // quando true, em caso de poucos frames em uma gravação, registra aviso (e retorna no model.warnings)
+    alertOnLowSamples: true,
+    minSamplesPerRecordingToWarn: 4,
+
+    // Filtragem de silêncio (pré-processamento)
     silenceFilterEnabled: true,
     silenceRmsRatio: 0.05,
     minSilenceFrames: 5,
     minSpeechFrames: 3,
-    keepSilenceFraction: 0.10,
+    keepSilenceFraction: 0.0,
 
     logMel: false,
     normalizeCentroid: false,

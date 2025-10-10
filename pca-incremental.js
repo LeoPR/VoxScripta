@@ -1,5 +1,5 @@
 // pca-incremental.js — consumindo dados pré-processados via pca-data-prep.js (fala apenas)
-// Ajuste: passa limiares robustos (minRmsAbsolute, minMelSumRatio) para evitar frames todos-zero.
+// Mantém estabilidade + avisos. Adição: inclui model.segmentsSummary (da preparação) para uso na UI.
 
 (function(){
   'use strict';
@@ -12,11 +12,24 @@
     return {};
   }
 
-  function safeOrRandom(vec, d) {
+  function mulberry32(seed) {
+    return function() {
+      let t = seed += 0x6D2B79F5;
+      t = Math.imul(t ^ t >>> 15, t | 1);
+      t ^= t + Math.imul(t ^ t >>> 7, t | 61);
+      return ((t ^ t >>> 14) >>> 0) / 4294967296;
+    };
+  }
+
+  function safeOrRandom(vec, d, rng) {
     let norm=0;
     for (let i=0;i<d;i++) norm += vec[i]*vec[i];
     if (norm < 1e-12) {
-      for (let i=0;i<d;i++) vec[i] = (Math.random()*2-1)*0.01;
+      if (rng) {
+        for (let i=0;i<d;i++) vec[i] = (rng()*2-1)*0.01;
+      } else {
+        for (let i=0;i<d;i++) vec[i] = (Math.random()*2-1)*0.01;
+      }
     }
   }
 
@@ -44,9 +57,14 @@
     }
   }
 
-  function createPcaModel(k, d) {
+  function createPcaModel(k, d, seed) {
     const W = new Float32Array(k*d);
-    for (let i=0;i<k*d;i++) W[i] = (Math.random()*2-1)*0.01;
+    if (Number.isFinite(seed)) {
+      const rng = mulberry32(seed >>> 0);
+      for (let i=0;i<k*d;i++) W[i] = (rng()*2-1)*0.01;
+    } else {
+      for (let i=0;i<k*d;i++) W[i] = (Math.random()*2-1)*0.01;
+    }
     reOrthogonalize(W,k,d);
     return {
       k,d,
@@ -102,41 +120,6 @@
     };
   }
 
-  function ojaUpdate(model, x, baseLr, reorthEvery){
-    model.updateMean(x);
-    const d = model.d;
-    const xc = new Float32Array(d);
-    for (let i=0;i<d;i++) {
-      const xi = x[i];
-      const mi = model.mean[i];
-      xc[i] = (Number.isFinite(xi) && Number.isFinite(mi)) ? (xi - mi) : 0;
-    }
-
-    const lr = baseLr / Math.sqrt(model.nObs||1);
-
-    for (let c=0;c<model.k;c++){
-      const base = c*d;
-      let y=0;
-      for (let i=0;i<d;i++){
-        const w = model.components[base+i];
-        const xi = xc[i];
-        if (Number.isFinite(w) && Number.isFinite(xi)) y += w*xi;
-      }
-      for (let i=0;i<d;i++){
-        const w = model.components[base+i];
-        const xi = xc[i];
-        const upd = (Number.isFinite(lr) && Number.isFinite(y) && Number.isFinite(xi) && Number.isFinite(w))
-          ? (lr * y * (xi - y*w))
-          : 0;
-        const cand = w + upd;
-        model.components[base+i] = Number.isFinite(cand) ? cand : w;
-      }
-    }
-    if (model.nObs % reorthEvery === 0) {
-      reOrthogonalize(model.components, model.k, model.d);
-    }
-  }
-
   function estimateExplainedVariance(model, dataMatrix){
     const d = model.d;
     const n = Math.floor(dataMatrix.length / d);
@@ -188,8 +171,42 @@
     return { explained, cumulative };
   }
 
-  // Consome dados do pca-data-prep (fala somente + filtros robustos)
-  async function gatherTrainFeatures() {
+  function ojaUpdate(model, x, baseLr, reorthEvery, lrDecayFactor, lrPower){
+    model.updateMean(x);
+    const d = model.d;
+    const xc = new Float32Array(d);
+    for (let i=0;i<d;i++) {
+      const xi = x[i];
+      const mi = model.mean[i];
+      xc[i] = (Number.isFinite(xi) && Number.isFinite(mi)) ? (xi - mi) : 0;
+    }
+    const nObs = Math.max(1, model.nObs);
+    const lr = (baseLr || 0.05) * (lrDecayFactor || 1.0) / Math.pow(nObs, (typeof lrPower === 'number' ? lrPower : 0.5));
+
+    for (let c=0;c<model.k;c++){
+      const base = c*d;
+      let y=0;
+      for (let i=0;i<d;i++){
+        const w = model.components[base+i];
+        const xi = xc[i];
+        if (Number.isFinite(w) && Number.isFinite(xi)) y += w*xi;
+      }
+      for (let i=0;i<d;i++){
+        const w = model.components[base+i];
+        const xi = xc[i];
+        const upd = (Number.isFinite(lr) && Number.isFinite(y) && Number.isFinite(xi) && Number.isFinite(w))
+          ? (lr * y * (xi - y*w))
+          : 0;
+        const cand = w + upd;
+        model.components[base+i] = Number.isFinite(cand) ? cand : w;
+      }
+    }
+    if (model.nObs % reorthEvery === 0) {
+      reOrthogonalize(model.components, model.k, model.d);
+    }
+  }
+
+  async function gatherTrainFeaturesWithChecks() {
     const cfg = getCfg();
     const trainIds = (window.uiAnalyzer && window.uiAnalyzer.getTrainPool) ? window.uiAnalyzer.getTrainPool() : [];
     if (!trainIds.length) throw new Error('Train Pool vazio.');
@@ -204,74 +221,170 @@
       maxFramesPerRecording: cfg.maxFramesPerRecording || 4000,
       contextWindow: 0,
       sampleLimitTotal: cfg.sampleLimitTotal || 80000,
-
-      // Limiar robusto (evita frames todos-zero)
-      minRmsAbsolute: 0.002,
-      minMelSumRatio: 0.02
+      minRmsAbsolute: cfg.minRmsAbsolute || 0.002,
+      minMelSumRatio: cfg.minMelSumRatio || 0.02
     });
 
-    return {
-      data: prep.dataMatrix,
-      n: prep.n,
-      d: prep.d,
-      usedFrames: prep.n,
-      skippedFrames: 0,
+    const warnings = [];
+    const perRecordingCounts = prep.perRecordingCounts || {};
+    const lowRecIds = [];
+    for (const idStr of Object.keys(perRecordingCounts)) {
+      const c = perRecordingCounts[idStr];
+      if (c < (getCfg().minSamplesPerRecordingToWarn || 4)) lowRecIds.push({ id: idStr, count: c });
+    }
+    if (lowRecIds.length && (getCfg().alertOnLowSamples !== false)) {
+      warnings.push(`Algumas gravações forneceram poucas amostras: ${lowRecIds.map(x=>`${x.id}:${x.count}`).join(', ')}`);
+    }
+
+    if (prep.n < (getCfg().minFramesForGood || 200)) {
+      warnings.push(`Poucas amostras totais para PCA robusto: ${prep.n} frames (recomendado >= ${getCfg().minFramesForGood || 200}).`);
+    }
+
+    return Object.assign({}, prep, { warnings, perRecordingCounts });
+  }
+
+  async function runBatchFallback(prep, cfg) {
+    if (!window.pcaBatch || typeof window.pcaBatch.computePCA !== 'function') {
+      throw new Error('pca-batch.js não disponível para fallback.');
+    }
+    const k = Math.min(cfg.components || 8, prep.d);
+    const modelB = window.pcaBatch.computePCA(prep.dataMatrix, prep.n, prep.d, { k });
+    const model = {
+      k: modelB.k,
+      d: modelB.d,
+      nObs: prep.n,
+      mean: Float32Array.from(modelB.mean || []),
+      components: new Float32Array(modelB.components),
+      explainedVariance: modelB.explainedVariance || new Float32Array(k),
+      cumulativeVariance: modelB.cumulativeVariance || new Float32Array(k),
+      framesUsed: prep.n,
+      framesSkipped: 0,
       framesSilenceTotal: 0,
       framesSilenceKept: 0,
       framesSilenceRemoved: 0,
       speechFrames: prep.n,
-      centroidNormalized: true
+      centroidNormalized: true,
+      project(vec) {
+        const out = new Float32Array(this.k);
+        for (let c = 0; c < this.k; c++) {
+          let s = 0;
+          const base = c * this.d;
+          for (let i = 0; i < this.d; i++) {
+            const xi = Number.isFinite(vec[i]) ? vec[i] : 0;
+            const mi = this.mean[i] || 0;
+            s += this.components[base + i] * (xi - mi);
+          }
+          out[c] = s;
+        }
+        return out;
+      }
     };
+    // anexar resumo de segmentação
+    model.segmentsSummary = prep.segmentsSummary || {};
+    return model;
   }
 
   async function runIncrementalPCAOnTrainPool(progressCb){
     const cfg = getCfg();
-    const {
-      data, n, d,
-      usedFrames,
-      framesSilenceTotal,
-      framesSilenceKept,
-      framesSilenceRemoved,
-      speechFrames,
-      centroidNormalized,
-      skippedFrames
-    } = await gatherTrainFeatures();
+    const prep = await gatherTrainFeaturesWithChecks();
 
-    const k = Math.min(cfg.components || 8, d);
-    const model = createPcaModel(k,d);
+    const warnings = Array.isArray(prep.warnings) ? prep.warnings.slice() : [];
+
+    if (prep.n <= (cfg.minFramesForBatchFallback || 30)) {
+      try {
+        const batchModel = await runBatchFallback(prep, cfg);
+        batchModel.warnings = warnings;
+        batchModel.__updatedAt = Date.now();
+        window._pcaModel = batchModel;
+        window._pcaWarnings = warnings;
+        return batchModel;
+      } catch (err) {
+        console.warn('[pca-incremental] falha no fallback batch:', err);
+      }
+    }
+
+    const k = Math.min(cfg.components || 8, prep.d);
+    const seed = Number.isFinite(cfg.initSeed) ? (cfg.initSeed & 0xFFFFFFFF) : null;
+    const model = createPcaModel(k, prep.d, seed);
+    model.framesUsed = prep.n;
+    model.framesSkipped = 0;
 
     const totalEpochs = cfg.maxEpochs || 1;
     const reorth = cfg.reorthogonalizeEvery || 3000;
     const baseLr = cfg.learningRate || 0.05;
-    let processed=0;
+    const lrDecayFactor = cfg.lrDecayFactor || 1.0;
+    const lrPower = (typeof cfg.lrPower === 'number') ? cfg.lrPower : 0.5;
 
+    let processed=0;
     for (let epoch=0; epoch<totalEpochs; epoch++){
-      for (let r=0;r<n;r++){
-        const sample = data.subarray(r*d, r*d + d);
-        ojaUpdate(model, sample, baseLr, reorth);
+      for (let r=0;r<prep.n;r++){
+        const sample = prep.dataMatrix.subarray(r*prep.d, r*prep.d + prep.d);
+        ojaUpdate(model, sample, baseLr, reorth, lrDecayFactor, lrPower);
         processed++;
         if (progressCb && processed % 1000 === 0){
-          progressCb(processed / (n*totalEpochs));
+          progressCb(processed / (prep.n*totalEpochs));
         }
       }
       if (progressCb) progressCb((epoch+1)/totalEpochs);
     }
     reOrthogonalize(model.components, model.k, model.d);
 
-    const stats = estimateExplainedVariance(model, data);
+    const stats = estimateExplainedVariance(model, prep.dataMatrix);
     model.explainedVariance = stats.explained;
     model.cumulativeVariance = stats.cumulative;
-    model.framesUsed = usedFrames;
-    model.framesSkipped = skippedFrames || 0;
 
-    model.framesSilenceTotal = framesSilenceTotal || 0;
-    model.framesSilenceKept = framesSilenceKept || 0;
-    model.framesSilenceRemoved = framesSilenceRemoved || 0;
-    model.speechFrames = speechFrames || usedFrames;
-    model.silenceFilterEnabled = false; // agora desnecessário
-    model.centroidNormalized = !!centroidNormalized;
+    // anexar resumo de segmentação (para a UI)
+    model.segmentsSummary = prep.segmentsSummary || {};
 
+    // degeneradas
+    const norms = new Float32Array(model.k);
+    let degCount = 0;
+    for (let c=0;c<model.k;c++){
+      let sum=0;
+      const base = c * model.d;
+      for (let i=0;i<model.d;i++){
+        const v = model.components[base + i];
+        sum += (Number.isFinite(v) ? v*v : 0);
+      }
+      norms[c] = Math.sqrt(sum);
+      if (!Number.isFinite(norms[c]) || norms[c] < (cfg.degenerateThreshold || 1e-6)) degCount++;
+    }
+    if (degCount > 0) {
+      warnings.push(`Componentes degeneradas detectadas: ${degCount}/${model.k}`);
+      if (cfg.replaceDegenerateWithBatch && window.pcaBatch && typeof window.pcaBatch.computePCA === 'function') {
+        try {
+          const batch = window.pcaBatch.computePCA(prep.dataMatrix, prep.n, prep.d, { k: model.k });
+          model.components = new Float32Array(batch.components);
+          model.mean = Float32Array.from(batch.mean || []);
+          model.explainedVariance = batch.explainedVariance || model.explainedVariance;
+          model.cumulativeVariance = batch.cumulativeVariance || model.cumulativeVariance;
+          warnings.push('Substituído componentes degeneradas por PCA batch.');
+        } catch (err) {
+          warnings.push('Falha ao substituir por PCA batch: ' + (err && err.message ? err.message : String(err)));
+        }
+      } else {
+        warnings.push('replaceDegenerateWithBatch desabilitado ou pca-batch não disponível.');
+      }
+    }
+
+    model.framesUsed = prep.n;
+    model.framesSkipped = prep.skippedFrames || 0;
+    model.framesSilenceTotal = prep.framesSilenceTotal || 0;
+    model.framesSilenceKept = prep.framesSilenceKept || 0;
+    model.framesSilenceRemoved = prep.framesSilenceRemoved || 0;
+    model.speechFrames = prep.n;
+    model.silenceFilterEnabled = false;
+    model.centroidNormalized = true;
+
+    model.warnings = warnings;
+    model.perRecordingCounts = prep.perRecordingCounts || {};
+    model.prepMeta = prep.meta || {};
+
+    model.__updatedAt = Date.now();
     window._pcaModel = model;
+    window._pcaWarnings = warnings;
+
+    if (warnings.length) console.warn('[pca-incremental] Warnings:', warnings);
     return model;
   }
 
