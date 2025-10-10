@@ -1,18 +1,10 @@
 // pca-visualizer.js
 // Visualizador de projeções PC1 x PC2 com cache por assinatura do modelo PCA.
-// Mudanças principais:
-//  - calcula assinatura simples do modelo (modelSignature)
-//  - armazena pontos/projeções + bbox (min/max dos eixos) em window._pcaVisualizerCache[signature]
-//  - reutiliza cache ao reabrir modal para manter o gráfico idêntico enquanto o modelo não muda
-//
-// Dependências esperadas (já existentes no seu projeto):
-// - window._pcaModel (após rodar o PCA)
-// - window.analyzer.extractFeatures (para obter features das gravações)
-// - window.getWorkspaceRecordings()
-// - window.segmentSilence (ou window.analyzerOverlay.segmentSilence) para filtragem de silêncio
-// - window.appConfig.getMergedProcessingOptions() (para configs pca/analyzer)
-//
-// Uso: incluir <script src="pca-visualizer.js"></script> (já feito)
+// Ajustes:
+// - Usa por padrão apenas gravações do Train Pool (fallback: todas do workspace se Train Pool vazio).
+// - A seleção (Train Pool vs Workspace) entra na assinatura do cache.
+// - Mostra "Fonte: ..." na legenda.
+// - Mantém a invalidação por __updatedAt do modelo.
 
 (function(){
   'use strict';
@@ -33,11 +25,13 @@
   // Normalização igual ao treino do PCA incremental
   function normalizeFeatureVector(vec, nMels, sampleRate){
     for (let m = 0; m < nMels; m++) {
-      vec[m] = Math.log1p(vec[m]);
+      vec[m] = Math.log1p(Number.isFinite(vec[m]) ? vec[m] : 0);
     }
     if (!sampleRate) sampleRate = 16000;
     const centroidIdx = nMels+1;
-    vec[centroidIdx] = vec[centroidIdx] / (sampleRate/2);
+    vec[centroidIdx] = Number.isFinite(vec[centroidIdx]) ? (vec[centroidIdx] / (sampleRate/2)) : 0;
+    const zIdx = nMels+2;
+    if (!Number.isFinite(vec[zIdx])) vec[zIdx] = 0;
     return vec;
   }
 
@@ -56,34 +50,58 @@
     return (window.segmentSilence || (window.analyzerOverlay && window.analyzerOverlay.segmentSilence));
   }
 
-  // Gera uma assinatura simples (hash numérico) do modelo PCA para identificar mudanças.
-  // Não é criptográfico, mas é determinístico para o mesmo modelo.
+  // Assinatura do modelo PCA (inclui __updatedAt se existir)
   function modelSignature(model) {
     if (!model || !model.components) return 'no-model';
-    // combine components and mean into a running hash (DJB2-like)
     let h = 5381;
     const comps = model.components;
     const mean = model.mean || new Float32Array(model.d || 0);
-    // incluir dimensões e k para robustez
     h = ((h << 5) + h) ^ (model.d || 0);
     h = ((h << 5) + h) ^ (model.k || 0);
-    // Somente uma amostragem dos componentes (para performance) se muito grande
-    const step = Math.max(1, Math.floor(comps.length / 1000)); // amostra até 1000 valores
+    if (model.__updatedAt) {
+      h = ((h << 5) + h) ^ (model.__updatedAt & 0xffffffff);
+    }
+    const step = Math.max(1, Math.floor(comps.length / 1000));
     for (let i = 0; i < comps.length; i += step) {
-      // quantizar para reduzir variações minúsculas (6 decimais)
       const v = Math.round((comps[i] || 0) * 1e6);
       h = ((h << 5) + h) ^ (v & 0xFFFFFFFF);
-      // mix with mean position
-      const mi = mean[i % mean.length] || 0;
+      const mi = mean[i % (mean.length || 1)] || 0;
       const mv = Math.round(mi * 1e6);
       h = ((h << 5) + h) ^ (mv & 0xFFFFFFFF);
     }
-    // garantir string
     return 'm' + (h >>> 0).toString(16);
   }
 
-  // Computa projeções PC1×PC2 para as gravações do workspace, respeitando normalização e filtro de silêncio
-  async function computeProjectionsPC12() {
+  // Seleção para visualização: prioriza Train Pool; fallback = workspace
+  function getSelectionForVisualization() {
+    const all = (typeof window.getWorkspaceRecordings === 'function') ? (window.getWorkspaceRecordings() || []) : (window.recordings || []);
+    let ids = [];
+    try {
+      if (window.uiAnalyzer && typeof window.uiAnalyzer.getTrainPool === 'function') {
+        ids = window.uiAnalyzer.getTrainPool() || [];
+      }
+    } catch (_) { ids = []; }
+
+    if (Array.isArray(ids) && ids.length) {
+      const selected = ids.map(id => all.find(r => r && String(r.id) === String(id))).filter(Boolean);
+      if (selected.length) {
+        return {
+          recs: selected,
+          label: `Train Pool (${selected.length} gravação(ões))`,
+          signature: 'train:' + ids.map(String).join(',')
+        };
+      }
+    }
+    // fallback
+    return {
+      recs: all,
+      label: `Workspace (todas) (${all.length} gravação(ões))`,
+      signature: 'workspace:all'
+    };
+  }
+
+  // Computa projeções PC1×PC2 para um conjunto específico de gravações
+  async function computeProjectionsPC12(recsToUse) {
     if (!window._pcaModel) throw new Error('Modelo PCA não encontrado. Execute o PCA primeiro.');
     const model = window._pcaModel;
     const cfg = getCfg();
@@ -93,8 +111,8 @@
     const minSilenceFrames = pcaCfg.minSilenceFrames || 5;
     const minSpeechFrames = pcaCfg.minSpeechFrames || 3;
 
-    const recs = (typeof window.getWorkspaceRecordings === 'function') ? window.getWorkspaceRecordings() : (window.recordings || []);
-    if (!recs || !recs.length) throw new Error('Sem gravações no workspace.');
+    const recs = Array.isArray(recsToUse) ? recsToUse : [];
+    if (!recs || !recs.length) throw new Error('Sem gravações para visualizar (selecione no Train Pool ou adicione ao workspace).');
 
     // Coletar features e achar RMS máximo global (para segmentação)
     const loaded = [];
@@ -110,7 +128,7 @@
         console.warn('Dimensão inconsistente; pulando rec id=', rec.id);
         continue;
       }
-      if (!sampleRate && fr.meta && fr.meta.sampleRate) sampleRate = fr.meta.sampleRate;
+      if (fr.meta && fr.meta.sampleRate) sampleRate = fr.meta.sampleRate;
       const flat = fr.features;
       const frames = fr.shape.frames;
       const rmsIndex = fr.meta.nMels;
@@ -245,11 +263,19 @@
     ];
   }
 
-  function buildLegend(container, recsOrder, colorForRec, countsMap){
+  function buildLegend(container, recsOrder, colorForRec, countsMap, sourceInfo){
     container.innerHTML = '';
+    if (sourceInfo) {
+      const cap = document.createElement('div');
+      cap.style.fontSize = '12px';
+      cap.style.color = '#666';
+      cap.style.margin = '2px 0 6px 0';
+      cap.textContent = `Fonte: ${sourceInfo}`;
+      container.appendChild(cap);
+    }
     const ul = document.createElement('ul');
     ul.style.listStyle = 'none';
-    ul.style.margin = '8px 0 0 0';
+    ul.style.margin = '0';
     ul.style.padding = '0';
     ul.style.display = 'flex';
     ul.style.flexWrap = 'wrap';
@@ -366,13 +392,25 @@
         return;
       }
 
-      const signature = modelSignature(window._pcaModel);
+      // Invalidação automática de cache quando o modelo muda (via __updatedAt)
+      const updatedAt = window._pcaModel.__updatedAt || 0;
+      if (window._pcaVisualizerCache._lastModelUpdatedAt !== undefined &&
+          window._pcaVisualizerCache._lastModelUpdatedAt !== updatedAt) {
+        window._pcaVisualizerCache = {};
+      }
+      window._pcaVisualizerCache._lastModelUpdatedAt = updatedAt;
+
+      // Seleção: prioriza Train Pool
+      const selection = getSelectionForVisualization();
+      const selectionSig = selection.signature; // ex: "train:id1,id2" ou "workspace:all"
+
+      const signature = modelSignature(window._pcaModel) + '|' + selectionSig;
       // Verifica cache
       let cached = window._pcaVisualizerCache[signature];
 
       if (!cached) {
         // calcular projeções e bbox
-        const { points, perRecCounts } = await computeProjectionsPC12();
+        const { points, perRecCounts } = await computeProjectionsPC12(selection.recs);
         // determinar bbox
         let minX=Infinity, maxX=-Infinity, minY=Infinity, maxY=-Infinity;
         for (const p of points) {
@@ -382,16 +420,16 @@
         if (!isFinite(minX) || !isFinite(maxX)) { minX=-1; maxX=1; }
         if (!isFinite(minY) || !isFinite(maxY)) { minY=-1; maxY=1; }
 
-        // Ordem das gravações (workspace)
-        const recs = (typeof window.getWorkspaceRecordings === 'function') ? window.getWorkspaceRecordings() : (window.recordings || []);
+        // Ordem das gravações (seleção)
         const palette = colorPalette();
-        const recsOrder = recs.map((r,i)=>({ id:r.id, name:r.name || String(r.id), color: palette[i % palette.length] }));
+        const recsOrder = selection.recs.map((r,i)=>({ id:r.id, name:r.name || String(r.id), color: palette[i % palette.length] }));
 
         cached = {
           points,
           perRecCounts,
           bbox: { minX, maxX, minY, maxY },
-          recsOrder
+          recsOrder,
+          sourceInfo: selection.label
         };
         window._pcaVisualizerCache[signature] = cached;
       }
@@ -399,11 +437,11 @@
       const { modal, canvas, legend } = createVisModal();
 
       // Preparar cores por gravação (usar recsOrder do cache para consistência)
-      const recsOrder = cached.recsOrder || ((typeof window.getWorkspaceRecordings === 'function') ? window.getWorkspaceRecordings().map((r,i)=>({id:r.id,name:r.name||String(r.id),color:colorPalette()[i%16]})) : []);
+      const recsOrder = cached.recsOrder || [];
       const colorForRec = (id) => {
         const idx = recsOrder.findIndex(rr => String(rr.id) === String(id));
         return (idx>=0) ? recsOrder[idx].color : '#888';
-      };
+        };
 
       // Mensagem de carregamento simples
       const ctx = canvas.getContext('2d');
@@ -416,7 +454,7 @@
       _lastRecsOrder = recsOrder;
 
       drawScatter(canvas, cached.points, colorForRec, cached.bbox);
-      buildLegend(legend, recsOrder, colorForRec, cached.perRecCounts || new Map());
+      buildLegend(legend, recsOrder, colorForRec, cached.perRecCounts || new Map(), cached.sourceInfo);
 
     } catch (err) {
       console.error('pca-visualizer: erro ao abrir visualização:', err);

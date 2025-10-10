@@ -3,6 +3,9 @@
 //  - Expondo window.uiAnalyzer.setTrainPool(ids) para restaurar train pool de uma sessão
 //  - Substituição do botão "Rem" por ícone de lixeira (🗑️) na lista do Train Pool
 //  - [Novo] Botão "PCA (batch diagnóstico)" no modal PCA para rodar pcaDataPrep + pcaBatch
+//  - Ao rodar PCA batch o modelo é salvo em window._pcaBatchModel e também em window._pcaModel,
+//    e o cache do visualizador é limpo para forçar atualização.
+//
 // OBS: alterações intencionais e mínimas; lógica original preservada.
 
 (function () {
@@ -299,7 +302,7 @@
     }
   }
 
-  /* ---------- Novo: PCA Batch Diagnóstico ---------- */
+  /* ---------- Novo: PCA Batch Diagnóstico (corrigido para expor modelo + limpar cache visual) ---------- */
   async function runPCABatchHandler() {
     try {
       const modal = document.getElementById('pca-modal') || createPCAModal();
@@ -329,8 +332,21 @@
 
       // Preparar dados e rodar PCA batch
       const res = await window.pcaDataPrep.prepareDataForPCA();
-      const k = Math.min(8, res.d);
+      const k = Math.min(8, res.d || 8);
       const model = window.pcaBatch.computePCA(res.dataMatrix, res.n, res.d, { k });
+
+      // Guardar modelo de batch e atualizar modelo "oficial" + limpar cache do visualizador
+      try {
+        model.__updatedAt = Date.now();
+        window._pcaBatchModel = model;
+        window._pcaModel = model; // unificar para visualizador
+
+        // limpar cache do visualizador para forçar recriar projeções
+        window._pcaVisualizerCache = {};
+        window._pcaVisualizerCache._lastModelUpdatedAt = model.__updatedAt;
+      } catch (e) {
+        console.warn('Falha ao armazenar modelo PCA batch globalmente:', e);
+      }
 
       const ev = Array.from(model.explainedVariance).map(v=> Number.isFinite(v)?(v*100).toFixed(2)+'%':'0.00%');
       const cum = Array.from(model.cumulativeVariance).map(v=> Number.isFinite(v)?(v*100).toFixed(2)+'%':'0.00%');
@@ -345,6 +361,9 @@
           <span style="font-size:12px;">${cum.join(' | ')}</span>
         </div>
         <canvas id="pca-batch-variance-chart" width="480" height="140" style="margin-top:8px;border:1px solid #eee;border-radius:6px;"></canvas>
+        <div style="margin-top:8px;font-size:12px;color:#666;">
+          Modelo salvo em <code>window._pcaBatchModel</code> e também em <code>window._pcaModel</code>. Cache do visualizador reiniciado.
+        </div>
       `;
 
       // Reusar o mesmo helper do incremental
@@ -353,6 +372,8 @@
         model.explainedVariance,
         model.cumulativeVariance
       );
+
+      console.log('[pca-batch] modelo salvo em window._pcaBatchModel / window._pcaModel', model);
 
     } catch (err) {
       console.error('runPCABatchHandler erro:', err);
