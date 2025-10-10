@@ -2,6 +2,7 @@
 // Principais adições:
 //  - Expondo window.uiAnalyzer.setTrainPool(ids) para restaurar train pool de uma sessão
 //  - Substituição do botão "Rem" por ícone de lixeira (🗑️) na lista do Train Pool
+//  - [Novo] Botão "PCA (batch diagnóstico)" no modal PCA para rodar pcaDataPrep + pcaBatch
 // OBS: alterações intencionais e mínimas; lógica original preservada.
 
 (function () {
@@ -298,6 +299,70 @@
     }
   }
 
+  /* ---------- Novo: PCA Batch Diagnóstico ---------- */
+  async function runPCABatchHandler() {
+    try {
+      const modal = document.getElementById('pca-modal') || createPCAModal();
+      modal.style.display = 'block';
+      const body = modal.querySelector('.pca-body');
+
+      if (!window.pcaDataPrep || !window.pcaDataPrep.prepareDataForPCA) {
+        body.insertAdjacentHTML('beforeend', `<div style="color:#c00; margin-top:8px;">pca-data-prep.js não carregado.</div>`);
+        return;
+      }
+      if (!window.pcaBatch || !window.pcaBatch.computePCA) {
+        body.insertAdjacentHTML('beforeend', `<div style="color:#c00; margin-top:8px;">pca-batch.js não carregado.</div>`);
+        return;
+      }
+
+      const sectionId = 'pca-batch-section';
+      let section = document.getElementById(sectionId);
+      if (!section) {
+        section = document.createElement('div');
+        section.id = sectionId;
+        section.style.marginTop = '12px';
+        section.style.borderTop = '1px solid #eee';
+        section.style.paddingTop = '10px';
+        body.appendChild(section);
+      }
+      section.innerHTML = '<div>Rodando PCA batch (diagnóstico)...</div>';
+
+      // Preparar dados e rodar PCA batch
+      const res = await window.pcaDataPrep.prepareDataForPCA();
+      const k = Math.min(8, res.d);
+      const model = window.pcaBatch.computePCA(res.dataMatrix, res.n, res.d, { k });
+
+      const ev = Array.from(model.explainedVariance).map(v=> Number.isFinite(v)?(v*100).toFixed(2)+'%':'0.00%');
+      const cum = Array.from(model.cumulativeVariance).map(v=> Number.isFinite(v)?(v*100).toFixed(2)+'%':'0.00%');
+
+      section.innerHTML = `
+        <div><b>PCA (batch)</b> — Diagnóstico</div>
+        <div style="font-size:12px; line-height:1.4; margin-top:4px;">
+          <b>n (frames):</b> ${res.n} &nbsp; <b>d:</b> ${res.d} &nbsp; <b>k:</b> ${k}<br/>
+          <b>Variância explicada (%):</b><br/>
+          <span style="font-size:12px;">${ev.join(' | ')}</span><br/>
+          <b>Acumulada (%):</b><br/>
+          <span style="font-size:12px;">${cum.join(' | ')}</span>
+        </div>
+        <canvas id="pca-batch-variance-chart" width="480" height="140" style="margin-top:8px;border:1px solid #eee;border-radius:6px;"></canvas>
+      `;
+
+      // Reusar o mesmo helper do incremental
+      drawVarianceChart(
+        document.getElementById('pca-batch-variance-chart'),
+        model.explainedVariance,
+        model.cumulativeVariance
+      );
+
+    } catch (err) {
+      console.error('runPCABatchHandler erro:', err);
+      try {
+        const body = (document.getElementById('pca-modal') || {}).querySelector ? document.getElementById('pca-modal').querySelector('.pca-body') : null;
+        if (body) body.insertAdjacentHTML('beforeend', `<div style="color:#c00;">Erro no PCA batch: ${err && err.message ? err.message : err}</div>`);
+      } catch(_) {}
+    }
+  }
+
   /* ---------- Render Helpers para diagnóstico ---------- */
 
   function renderPreDiagHTML(pre){
@@ -444,11 +509,20 @@
     body.textContent = '...';
     const actions = document.createElement('div');
     actions.className = 'modal-actions';
+
+    // [Novo] Botão PCA batch diagnóstico
+    const batchBtn = document.createElement('button');
+    batchBtn.className = 'small';
+    batchBtn.textContent = 'PCA (batch diagnóstico)';
+    batchBtn.onclick = runPCABatchHandler;
+    actions.appendChild(batchBtn);
+
     const close2 = document.createElement('button');
     close2.className = 'small';
     close2.textContent = 'Fechar';
     close2.onclick = () => m.remove();
     actions.appendChild(close2);
+
     m.appendChild(header);
     m.appendChild(body);
     m.appendChild(actions);

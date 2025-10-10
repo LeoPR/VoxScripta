@@ -1,11 +1,13 @@
 // waveform.js - desenho de waveform (versão com showWaveform do recorder.js)
-// + utilitários de trim de silêncio e desenho live.
+// + utilitários de trim com integração ao segmentador de silêncio.
 // Exporta globalmente:
-// window.showWaveform(source) // aceita Blob ou URL string
+// window.showWaveform(source)
 // window.drawLiveWaveform(analyser)
 // window.stopLiveWaveform()
-// window.analyzeLeadingSilence(source, opts)
-// window.trimLeadingSilence(source, opts)
+// window.analyzeLeadingSilence(source, opts)        [compat] delega para segmentador quando ativado
+// window.trimLeadingSilence(source, opts)           [compat] delega para recorte pelos 2 lados quando ativado
+// window.analyzeTrimRegions(source, opts)           [novo] usa segmentador para detectar [start..end]
+// window.trimAudioByRegions(source, {startSec,endSec})
 // window.trimAndPersistRecording(source, opts)
 
 (function () {
@@ -16,17 +18,23 @@
     threshold: 0.01,
     chunkSizeMs: 10,
     minNonSilenceMs: 50,
-    safetyPaddingMs: 10
+    safetyPaddingMs: 10,
+
+    // NOVOS (ver config.js)
+    useSegmenter: true,
+    preRollFraction: 0.0,
+    postRollFraction: 0.0,
+    minPreRollMs: 0,
+    minPostRollMs: 0
   };
 
-  function _getTrimOptions() {
+  function _getMerged() {
     try {
       if (window.appConfig && typeof window.appConfig.getMergedProcessingOptions === 'function') {
-        const merged = window.appConfig.getMergedProcessingOptions();
-        if (merged && merged.trim) return Object.assign({}, defaultTrimOptions, merged.trim);
+        return window.appConfig.getMergedProcessingOptions();
       }
     } catch(_) {}
-    return defaultTrimOptions;
+    return { trim: defaultTrimOptions, analyzer: {}, spectrogram: {} };
   }
 
   // ------------------------------
@@ -187,92 +195,8 @@
   }
 
   // ------------------------------
-  // Trim utilities (detecta silêncio e cria WAV usando encodeWAV de audio.js)
+  // Helpers p/ nomes e workspace (evitar erro do helper indefinido)
   // ------------------------------
-  function _rms(samples, start, len) {
-    let sum = 0;
-    for (let i = 0; i < len; i++) {
-      const v = samples[start + i] || 0;
-      sum += v * v;
-    }
-    return Math.sqrt(sum / Math.max(1, len));
-  }
-
-  async function analyzeLeadingSilence(source, opts = {}) {
-    const opt = Object.assign({}, defaultTrimOptions, _getTrimOptions(), opts);
-    const audioBuffer = await _decodeToAudioBuffer(source);
-    const sampleRate = audioBuffer.sampleRate;
-    const channelData = audioBuffer.numberOfChannels ? audioBuffer.getChannelData(0) : null;
-    if (!channelData) return { silenceEnd: 0, sampleRate, samples: 0 };
-
-    const chunkSize = Math.max(1, Math.floor((opt.chunkSizeMs / 1000) * sampleRate));
-    const minNonSilenceChunks = Math.max(1, Math.floor(opt.minNonSilenceMs / opt.chunkSizeMs));
-
-    let silenceEndSample = 0;
-    let found = false;
-
-    const totalChunks = Math.ceil(channelData.length / chunkSize);
-
-    for (let ci = 0; ci < totalChunks; ci++) {
-      const start = ci * chunkSize;
-      const len = Math.min(chunkSize, channelData.length - start);
-      const rms = _rms(channelData, start, len);
-
-      if (rms > opt.threshold) {
-        // Confirmar que há minNonSilenceChunks consecutivos acima do threshold
-        let ok = true;
-        for (let look = 1; look <= minNonSilenceChunks - 1; look++) {
-          const idx = ci + look;
-          if (idx >= totalChunks) break;
-          const s2 = idx * chunkSize;
-          const l2 = Math.min(chunkSize, channelData.length - s2);
-          const rms2 = _rms(channelData, s2, l2);
-          if (rms2 <= opt.threshold) { ok = false; break; }
-        }
-        if (ok) {
-          // Fim do silêncio = início deste frame não-silencioso (com padding de segurança)
-          const pad = Math.max(0, Math.floor((opt.safetyPaddingMs / 1000) * sampleRate));
-          silenceEndSample = Math.max(0, (ci * chunkSize) - pad);
-          found = true;
-          break;
-        }
-      }
-    }
-
-    if (!found) {
-      // Não encontrou voz -> silêncio ocupa tudo
-      return { silenceEnd: audioBuffer.duration, sampleRate, samples: channelData.length };
-    }
-
-    const silenceEnd = Math.min(audioBuffer.duration, silenceEndSample / sampleRate);
-    return { silenceEnd, sampleRate, samples: channelData.length };
-  }
-
-  // NOTE: encoding removed from waveform.js — usa audio.js (window.encodeWAV)
-  async function trimLeadingSilence(source, opts = {}) {
-    const opt = Object.assign({}, defaultTrimOptions, _getTrimOptions(), opts);
-    const audioBuffer = await _decodeToAudioBuffer(source);
-    if (!audioBuffer) throw new Error('Falha ao decodificar áudio');
-
-    const analysis = await analyzeLeadingSilence(source, opt);
-    let startSec = analysis.silenceEnd || 0;
-    if (startSec >= audioBuffer.duration) {
-      const empty = new Float32Array(0);
-      return window.encodeWAV(empty, audioBuffer.sampleRate);
-    }
-
-    const startSample = Math.floor(startSec * audioBuffer.sampleRate);
-    const remaining = Math.max(0, audioBuffer.length - startSample);
-    const out = new Float32Array(remaining);
-    const ch0 = audioBuffer.getChannelData(0);
-    for (let i = 0; i < remaining; i++) {
-      out[i] = ch0[startSample + i];
-    }
-    const wavBlob = window.encodeWAV(out, audioBuffer.sampleRate);
-    return wavBlob;
-  }
-
-  // Helpers para nome do Trim
   function _escapeRegExp(s) { return String(s || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
   function _stripTrimmedSuffix(name) {
     const m = String(name || '').match(/^(.*?)(?:\s+Trimmed(?:\s+\d+)?)$/i);
@@ -308,10 +232,233 @@
     }
     return `${base} Trimmed ${maxN + 1}`;
   }
+  // expor para evitar ReferenceError mesmo se bundlers mexerem na ordem
+  window._getSelectedRecordingNameFromDOM = _getSelectedRecordingNameFromDOM;
+  window._getWorkspaceRecordingsSafe = _getWorkspaceRecordingsSafe;
 
+  // ------------------------------
+  // Segmentador: analisar regiões de fala para trim dos 2 lados
+  // ------------------------------
+  async function analyzeTrimRegions(source, opts = {}) {
+    const merged = _getMerged();
+    const trimOpt = Object.assign({}, defaultTrimOptions, merged.trim || {}, opts || {});
+    const analyzerCfg = merged.analyzer || {};
+    const spectCfg = merged.spectrogram || {};
+
+    // Se segmentador não estiver disponível ou desativado, cai no método antigo (leading apenas)
+    const segFn = (window.segmentSilence || (window.analyzerOverlay && window.analyzerOverlay.segmentSilence));
+    if (!trimOpt.useSegmenter || typeof segFn !== 'function' || !window.analyzer || typeof window.analyzer.extractFeatures !== 'function') {
+      // fallback: detectar apenas início (compat)
+      const lead = await analyzeLeadingSilence(source, trimOpt);
+      const ab = await _decodeToAudioBuffer(source);
+      return {
+        startSec: lead.silenceEnd || 0,
+        endSec: ab.duration,
+        sampleRate: ab.sampleRate,
+        strategy: 'fallback-leading'
+      };
+    }
+
+    // Usar features para obter RMS por frame
+    const featuresRes = await window.analyzer.extractFeatures(source, {
+      fftSize: spectCfg.fftSize,
+      hopSize: spectCfg.hopSize,
+      nMels: spectCfg.nMels
+    });
+    const { features, shape, meta, timestamps } = featuresRes;
+    const frames = shape.frames;
+    const dims = shape.dims;
+    const nMels = meta.nMels;
+    const rmsIdx = nMels;
+
+    if (!frames) {
+      const ab = await _decodeToAudioBuffer(source);
+      return { startSec: 0, endSec: ab.duration, sampleRate: ab.sampleRate, strategy: 'no-frames' };
+    }
+
+    const rms = new Float32Array(frames);
+    let maxRms = 0;
+    for (let f=0; f<frames; f++){
+      const v = features[f*dims + rmsIdx];
+      const val = Number.isFinite(v) ? v : 0;
+      rms[f] = val;
+      if (val > maxRms) maxRms = val;
+    }
+    if (maxRms <= 0) maxRms = 1;
+
+    // Parâmetros do segmentador
+    const silenceRmsRatio = analyzerCfg.silenceRmsRatio || 0.12;
+    const minSilenceFrames = analyzerCfg.minSilenceFrames || 5;
+    const minSpeechFrames = analyzerCfg.minSpeechFrames || 3;
+
+    const segments = segFn(rms, maxRms, { silenceRmsRatio, minSilenceFrames, minSpeechFrames }) || [];
+    const speechSegs = segments.filter(s => s.type === 'speech');
+
+    // Se não achou fala, volta tudo
+    const ab = await _decodeToAudioBuffer(source);
+    const duration = ab.duration;
+    if (speechSegs.length === 0) {
+      return { startSec: 0, endSec: duration, sampleRate: ab.sampleRate, strategy: 'no-speech' };
+    }
+
+    // Início = começo do 1º segmento de fala; Fim = final do último segmento de fala
+    const first = speechSegs[0];
+    const last = speechSegs[speechSegs.length - 1];
+
+    // timestamps[f] indica o tempo de início do frame f; estimar fim do último frame
+    const frameDur = (meta.hopSize && meta.sampleRate) ? (meta.hopSize / meta.sampleRate) : ((timestamps[1]||0) - (timestamps[0]||0)) || 0;
+    let startSec = timestamps[first.startFrame] || 0;
+    let endSec = (timestamps[last.endFrame] || 0) + Math.max(frameDur, 0);
+
+    // Aplicar pré/pós-roll fracionário (opcional) — por padrão 0.0 (etapa 1)
+    const preRollByFrac = (trimOpt.preRollFraction || 0) * duration;
+    const postRollByFrac = (trimOpt.postRollFraction || 0) * duration;
+    const preRollByMs = (trimOpt.minPreRollMs || 0) / 1000;
+    const postRollByMs = (trimOpt.minPostRollMs || 0) / 1000;
+
+    const preRoll = Math.max(preRollByFrac, preRollByMs);
+    const postRoll = Math.max(postRollByFrac, postRollByMs);
+
+    startSec = Math.max(0, startSec - preRoll);
+    endSec = Math.min(duration, endSec + postRoll);
+    if (endSec < startSec) { endSec = Math.min(duration, startSec + Math.max(frameDur, 0)); }
+
+    return {
+      startSec, endSec,
+      sampleRate: ab.sampleRate,
+      strategy: 'segmenter',
+      frames, nMels,
+      segmentsCount: segments.length,
+      speechSegmentsCount: speechSegs.length
+    };
+  }
+
+  // ------------------------------
+  // Fallback antigo (leading apenas) — mantido p/ compat e fallback
+  // ------------------------------
+  function _rms(samples, start, len) {
+    let sum = 0;
+    for (let i = 0; i < len; i++) {
+      const v = samples[start + i] || 0;
+      sum += v * v;
+    }
+    return Math.sqrt(sum / Math.max(1, len));
+  }
+
+  async function analyzeLeadingSilence(source, opts = {}) {
+    const merged = _getMerged();
+    const trimOpt = Object.assign({}, defaultTrimOptions, merged.trim || {}, opts);
+
+    // Se segmentador estiver ativo, delega para analyzeTrimRegions
+    if (trimOpt.useSegmenter) {
+      const reg = await analyzeTrimRegions(source, trimOpt);
+      return { silenceEnd: reg.startSec, sampleRate: reg.sampleRate, samples: 0, strategy: reg.strategy };
+    }
+
+    // Método original por chunks (somente início)
+    const audioBuffer = await _decodeToAudioBuffer(source);
+    const sampleRate = audioBuffer.sampleRate;
+    const channelData = audioBuffer.numberOfChannels ? audioBuffer.getChannelData(0) : null;
+    if (!channelData) return { silenceEnd: 0, sampleRate, samples: 0 };
+
+    const chunkSize = Math.max(1, Math.floor(((trimOpt.chunkSizeMs || 10) / 1000) * sampleRate));
+    const minNonSilenceChunks = Math.max(1, Math.floor((trimOpt.minNonSilenceMs || 50) / (trimOpt.chunkSizeMs || 10)));
+
+    let silenceEndSample = 0;
+    let found = false;
+
+    const totalChunks = Math.ceil(channelData.length / chunkSize);
+
+    for (let ci = 0; ci < totalChunks; ci++) {
+      const start = ci * chunkSize;
+      const len = Math.min(chunkSize, channelData.length - start);
+      const rms = _rms(channelData, start, len);
+
+      if (rms > (trimOpt.threshold || 0.01)) {
+        // confirmar janela de não-silêncio
+        let ok = true;
+        for (let look = 1; look <= minNonSilenceChunks - 1; look++) {
+          const idx = ci + look;
+          if (idx >= totalChunks) break;
+          const s2 = idx * chunkSize;
+          const l2 = Math.min(chunkSize, channelData.length - s2);
+          const rms2 = _rms(channelData, s2, l2);
+          if (rms2 <= (trimOpt.threshold || 0.01)) { ok = false; break; }
+        }
+        if (ok) {
+          const pad = Math.max(0, Math.floor(((trimOpt.safetyPaddingMs || 10) / 1000) * sampleRate));
+          silenceEndSample = Math.max(0, (ci * chunkSize) - pad);
+          found = true;
+          break;
+        }
+      }
+    }
+
+    if (!found) {
+      return { silenceEnd: audioBuffer.duration, sampleRate, samples: channelData.length };
+    }
+
+    const silenceEnd = Math.min(audioBuffer.duration, silenceEndSample / sampleRate);
+    return { silenceEnd, sampleRate, samples: channelData.length };
+  }
+
+  // ------------------------------
+  // Trim por regiões [startSec..endSec] — corta ambos lados
+  // ------------------------------
+  async function trimAudioByRegions(source, regions) {
+    const { startSec = 0, endSec = null } = regions || {};
+    const audioBuffer = await _decodeToAudioBuffer(source);
+    const sr = audioBuffer.sampleRate;
+    const startSample = Math.max(0, Math.floor(startSec * sr));
+    const endSample = Math.min(audioBuffer.length, Math.floor((endSec !== null ? endSec : audioBuffer.duration) * sr));
+    const length = Math.max(0, endSample - startSample);
+
+    const out = new Float32Array(length);
+    const ch0 = audioBuffer.getChannelData(0);
+    for (let i = 0; i < length; i++) out[i] = ch0[startSample + i];
+
+    // usa WAV encoder global de audio.js
+    const wavBlob = window.encodeWAV(out, sr);
+    return wavBlob;
+  }
+
+  // Mantém API antiga, mas aplica o novo recorte dos dois lados se useSegmenter=true
+  async function trimLeadingSilence(source, opts = {}) {
+    const merged = _getMerged();
+    const trimOpt = Object.assign({}, defaultTrimOptions, merged.trim || {}, opts);
+    if (trimOpt.useSegmenter) {
+      const reg = await analyzeTrimRegions(source, trimOpt);
+      return await trimAudioByRegions(source, { startSec: reg.startSec, endSec: reg.endSec });
+    }
+    // Fallback antigo (somente começo)
+    const analysis = await analyzeLeadingSilence(source, trimOpt);
+    const audioBuffer = await _decodeToAudioBuffer(source);
+    const startSample = Math.floor((analysis.silenceEnd || 0) * audioBuffer.sampleRate);
+    const remaining = Math.max(0, audioBuffer.length - startSample);
+    const out = new Float32Array(remaining);
+    const ch0 = audioBuffer.getChannelData(0);
+    for (let i = 0; i < remaining; i++) out[i] = ch0[startSample + i];
+    return window.encodeWAV(out, audioBuffer.sampleRate);
+  }
+
+  // ------------------------------
+  // Persist + helpers
+  // ------------------------------
   async function trimAndPersistRecording(source, opts = {}) {
-    const opt = Object.assign({}, defaultTrimOptions, _getTrimOptions(), opts);
-    const trimmedBlob = await trimLeadingSilence(source, opt);
+    const merged = _getMerged();
+    const trimOpt = Object.assign({}, defaultTrimOptions, merged.trim || {}, opts);
+
+    let regions = null;
+    try {
+      regions = await analyzeTrimRegions(source, trimOpt);
+    } catch (e) {
+      // fallback total
+      const lead = await analyzeLeadingSilence(source, trimOpt);
+      const ab = await _decodeToAudioBuffer(source);
+      regions = { startSec: lead.silenceEnd || 0, endSec: ab.duration };
+    }
+
+    const trimmedBlob = await trimAudioByRegions(source, regions);
 
     // obter nome base do DOM (seleção) ou do workspace
     let baseName = _getSelectedRecordingNameFromDOM();
@@ -332,7 +479,7 @@
   }
 
   // ------------------------------
-  // binding do botão trim
+  // Botão Trim — agora mostrando [start..end] detectado
   // ------------------------------
   async function _onTrimButtonClick() {
     const btn = document.getElementById('trim-audio-btn');
@@ -341,14 +488,15 @@
       const audioEl = document.getElementById('audio-player');
       if (!audioEl || !audioEl.src) { alert('Nenhum áudio carregado para trim.'); return; }
       const src = audioEl.src;
-      const info = await analyzeLeadingSilence(src);
-      const secs = Math.max(0, Math.min(info.silenceEnd || 0, 60));
-      const msg = (secs <= 0) ? 'Nenhum silêncio inicial detectado.' : `Silêncio inicial detectado até ${secs.toFixed(3)}s. Deseja aplicar trim e criar nova gravação?`;
-      if (secs <= 0) {
-        if (!confirm(msg + '\nMesmo assim deseja tentar trim?')) return;
-      } else {
-        if (!confirm(msg)) return;
-      }
+
+      const reg = await analyzeTrimRegions(src);
+      const start = Math.max(0, reg.startSec || 0);
+      const end = Math.max(start, reg.endSec || 0);
+      const dur = (end - start);
+
+      const msg = `Intervalo de fala detectado: ${start.toFixed(3)}s → ${end.toFixed(3)}s (≈ ${(dur).toFixed(3)}s).
+Aplicar trim e criar nova gravação?`;
+      if (!confirm(msg)) return;
 
       const res = await trimAndPersistRecording(src);
       if (res && res.recordingObj) {
@@ -390,6 +538,8 @@
   window.stopLiveWaveform = stopLiveWaveform;
   window.analyzeLeadingSilence = analyzeLeadingSilence;
   window.trimLeadingSilence = trimLeadingSilence;
+  window.analyzeTrimRegions = analyzeTrimRegions;
+  window.trimAudioByRegions = trimAudioByRegions;
   window.trimAndPersistRecording = trimAndPersistRecording;
 
 })();

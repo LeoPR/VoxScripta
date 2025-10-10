@@ -40,7 +40,15 @@
     threshold: 0.01,
     chunkSizeMs: 10,
     minNonSilenceMs: 50,
-    safetyPaddingMs: 10
+    safetyPaddingMs: 10,
+
+    // NOVO: integração com segmentador e pré/pós-roll configuráveis
+    // Etapa 1: segmentador ligado, pré/pós-roll = 0 (ajuste depois)
+    useSegmenter: true,
+    preRollFraction: 0.0,   // depois ajuste para 0.05 (5%) se quiser “um pouquinho” antes
+    postRollFraction: 0.0,  // pode ajustar para 0.02 por ex., se desejar
+    minPreRollMs: 0,        // mínimo absoluto para pré-roll, em ms
+    minPostRollMs: 0        // mínimo absoluto para pós-roll, em ms
   };
 
   // Gravação
@@ -70,21 +78,19 @@
   };
 
   // PCA Incremental
-  // Novos campos para filtragem de silêncio inicial
   window.appConfig.pca = {
     components: 8,
     learningRate: 0.05,
     maxEpochs: 1,
     reorthogonalizeEvery: 3000,
 
-    // Filtragem de silêncio (primeiro passo incremental)
+    // Filtragem de silêncio (incremental)
     silenceFilterEnabled: true,
-    silenceRmsRatio: 0.05,       // frame é silêncio se RMS < maxRMSGlobal * ratio
-    minSilenceFrames: 5,         // funde micro-segmentos de silêncio muito curtos em fala
-    minSpeechFrames: 3,          // funde micro-segmentos de fala muito curtos em silêncio
-    keepSilenceFraction: 0.10,   // fração máxima de silêncio a manter após filtragem (0.10 = 10%)
+    silenceRmsRatio: 0.05,
+    minSilenceFrames: 5,
+    minSpeechFrames: 3,
+    keepSilenceFraction: 0.10,
 
-    // (Próximas etapas futuras: logMel, centroid normalization, z-score etc.)
     logMel: false,
     normalizeCentroid: false,
     applyZScore: false

@@ -1,4 +1,6 @@
-// pca-incremental.js — agora usando segmentação do overlay + log1p nas bandas Mel
+// pca-incremental.js — consumindo dados pré-processados via pca-data-prep.js (fala apenas)
+// Ajuste: passa limiares robustos (minRmsAbsolute, minMelSumRatio) para evitar frames todos-zero.
+
 (function(){
   'use strict';
 
@@ -57,7 +59,6 @@
         for (let i=0;i<this.d;i++){
           const xi = x[i];
           const mi = this.mean[i];
-          // proteger contra não-finitos na média
           const diff = (Number.isFinite(xi) && Number.isFinite(mi)) ? (xi - mi) : 0;
           const newMi = mi + diff/n;
           this.mean[i] = Number.isFinite(newMi) ? newMi : mi;
@@ -128,7 +129,7 @@
           ? (lr * y * (xi - y*w))
           : 0;
         const cand = w + upd;
-        model.components[base+i] = Number.isFinite(cand) ? cand : w; // proteção contra não-finitos
+        model.components[base+i] = Number.isFinite(cand) ? cand : w;
       }
     }
     if (model.nObs % reorthEvery === 0) {
@@ -187,178 +188,38 @@
     return { explained, cumulative };
   }
 
-  // Normalização mínima: centróide Hz → [0..1] (divide por sampleRate/2) + log1p nas bandas Mel
-  function normalizeFeatureVector(vec, nMels, sampleRate){
-    for (let m = 0; m < nMels; m++) {
-      let v = vec[m];
-      // mel energies devem ser ≥0; se vier algo inválido, trata como 0 antes do log1p
-      if (!Number.isFinite(v) || v < 0) v = 0;
-      vec[m] = Math.log1p(v);
-    }
-    if (!sampleRate) sampleRate = 16000;
-    const centroidIdx = nMels+1;
-    const c = vec[centroidIdx];
-    vec[centroidIdx] = Number.isFinite(c) ? (c / (sampleRate/2)) : 0;
-    // ZCR (nMels+2) fica como está; se for não-finito, zera
-    const zcrIdx = nMels+2;
-    if (!Number.isFinite(vec[zcrIdx])) vec[zcrIdx] = 0;
-    return vec;
-  }
-
-  function isFiniteVector(vec){
-    for (let i=0;i<vec.length;i++){
-      if (!Number.isFinite(vec[i])) return false;
-    }
-    return true;
-  }
-
-  // -- gatherTrainFeatures usando segmentSilence global do overlay --
+  // Consome dados do pca-data-prep (fala somente + filtros robustos)
   async function gatherTrainFeatures() {
     const cfg = getCfg();
-    const silenceFilterEnabled = !!cfg.silenceFilterEnabled;
-    const keepSilFrac = Math.min(1, Math.max(0, cfg.keepSilenceFraction !== undefined ? cfg.keepSilenceFraction : 0.001));
     const trainIds = (window.uiAnalyzer && window.uiAnalyzer.getTrainPool) ? window.uiAnalyzer.getTrainPool() : [];
     if (!trainIds.length) throw new Error('Train Pool vazio.');
-    const recs = (typeof window.getWorkspaceRecordings === 'function') ? window.getWorkspaceRecordings() : (window.recordings||[]);
-    let dims=null;
-
-    // Descobrir função segmentSilence do overlay
-    let segmentSilenceFn = (window.segmentSilence || (window.analyzerOverlay && window.analyzerOverlay.segmentSilence));
-    if (typeof segmentSilenceFn !== "function") {
-      throw new Error("Função segmentSilence não encontrada. Exporte 'segmentSilence' no overlay-analyzer.js (window.segmentSilence = segmentSilence;)");
+    if (!window.pcaDataPrep || typeof window.pcaDataPrep.prepareDataForPCA !== 'function') {
+      throw new Error('pca-data-prep.js não carregado. Inclua pca-data-prep.js antes do PCA.');
     }
 
-    const collected = [];
-    let globalMaxRms = 0;
-    let sampleRate = 16000;
+    const prep = await window.pcaDataPrep.prepareDataForPCA(trainIds, {
+      useSegmentSpeech: true,
+      keepSilenceFraction: 0.0,
+      applyZScore: false,
+      maxFramesPerRecording: cfg.maxFramesPerRecording || 4000,
+      contextWindow: 0,
+      sampleLimitTotal: cfg.sampleLimitTotal || 80000,
 
-    // Passagem 1: carregar e descobrir max RMS global
-    for (const rid of trainIds) {
-      const rec = recs.find(r=> r && String(r.id)===String(rid));
-      if (!rec) continue;
-      if (!rec.__featuresCache) {
-        if (!window.analyzer || !window.analyzer.extractFeatures) throw new Error('analyzer.extractFeatures indisponível.');
-        rec.__featuresCache = await window.analyzer.extractFeatures(rec.blob || rec.url, {});
-      }
-      const fr = rec.__featuresCache;
-      if (!dims) dims = fr.shape.dims;
-      if (!sampleRate && fr.meta && fr.meta.sampleRate) sampleRate = fr.meta.sampleRate;
-      if (fr.shape.dims !== dims) {
-        console.warn('Dims inconsistentes; pulando', rid);
-        continue;
-      }
-      collected.push(fr);
-      const flat = fr.features;
-      const frames = fr.shape.frames;
-      const rmsIndex = fr.meta.nMels;
-      for (let f=0; f<frames; f++){
-        const rms = flat[f*dims + rmsIndex];
-        if (rms>globalMaxRms) globalMaxRms = rms;
-      }
-    }
-    if (!collected.length) throw new Error('Nenhuma feature válida coletada.');
-
-    // Passagem 2: aplicar segmentação do overlay e filtragem
-    const vectors=[];
-    let silenceTotal=0;
-    let silenceKept=0;
-    let speechFrames=0;
-    let invalidFrames=0;
-
-    const silenceRmsRatio = cfg.silenceRmsRatio || 0.05;
-    const minSilenceFrames = cfg.minSilenceFrames || 5;
-    const minSpeechFrames = cfg.minSpeechFrames || 3;
-
-    for (const fr of collected){
-      const flat=fr.features;
-      const frames=fr.shape.frames;
-      const nMels = fr.meta.nMels;
-      const rmsIdx = nMels;
-
-      // Construir array de RMS
-      const rmsArr = new Float32Array(frames);
-      for (let f=0; f<frames; f++){
-        const rv = flat[f*dims + rmsIdx];
-        rmsArr[f] = Number.isFinite(rv) ? rv : 0;
-      }
-
-      let segments = [];
-      if (silenceFilterEnabled){
-        segments = segmentSilenceFn(rmsArr, globalMaxRms, {
-          silenceRmsRatio,
-          minSilenceFrames,
-          minSpeechFrames
-        });
-      } else {
-        segments = [{ startFrame: 0, endFrame: frames-1, type: "speech" }];
-      }
-
-      const speechIdxs = [];
-      const silenceIdxs = [];
-      for (const seg of segments){
-        for (let f=seg.startFrame; f<=seg.endFrame; f++){
-          if (seg.type === "speech") speechIdxs.push(f);
-          else silenceIdxs.push(f);
-        }
-      }
-
-      silenceTotal += silenceIdxs.length;
-      speechFrames += speechIdxs.length;
-
-      // Adicionar fala (sanitizando)
-      for (const f of speechIdxs){
-        const base = f*dims;
-        let vec = new Float32Array(flat.subarray(base, base+dims));
-        vec = normalizeFeatureVector(vec, nMels, sampleRate);
-        if (!isFiniteVector(vec)) { invalidFrames++; continue; }
-        vectors.push(vec);
-      }
-
-      // Amostra de silêncio, se keepSilFrac > 0
-      let chosen = [];
-      if (silenceFilterEnabled && keepSilFrac > 0 && silenceIdxs.length > 0){
-        const totalLocal = silenceIdxs.length + speechIdxs.length;
-        const maxSilKeepLocal = Math.max(1, Math.floor(keepSilFrac * totalLocal));
-        if (silenceIdxs.length <= maxSilKeepLocal){
-          chosen = silenceIdxs;
-        } else {
-          const step = silenceIdxs.length / maxSilKeepLocal;
-          for (let i=0;i<maxSilKeepLocal;i++){
-            const idx = Math.floor(i*step);
-            chosen.push(silenceIdxs[idx]);
-          }
-        }
-        silenceKept += chosen.length;
-        for (const f of chosen){
-          const base = f*dims;
-          let vec = new Float32Array(flat.subarray(base, base+dims));
-          vec = normalizeFeatureVector(vec, nMels, sampleRate);
-          if (!isFiniteVector(vec)) { invalidFrames++; continue; }
-          vectors.push(vec);
-        }
-      }
-    }
-
-    const n=vectors.length;
-    if (!n) throw new Error('Após filtragem não há frames suficientes.');
-
-    const data = new Float32Array(n*dims);
-    for (let r=0;r<n;r++) data.set(vectors[r], r*dims);
-
-    if (invalidFrames > 0) {
-      console.warn(`[PCA] Frames inválidos descartados: ${invalidFrames}`);
-    }
+      // Limiar robusto (evita frames todos-zero)
+      minRmsAbsolute: 0.002,
+      minMelSumRatio: 0.02
+    });
 
     return {
-      data,
-      n,
-      d:dims,
-      usedFrames: n,
-      skippedFrames: (silenceTotal - silenceKept),
-      framesSilenceTotal: silenceTotal,
-      framesSilenceKept: silenceKept,
-      framesSilenceRemoved: silenceTotal - silenceKept,
-      speechFrames,
+      data: prep.dataMatrix,
+      n: prep.n,
+      d: prep.d,
+      usedFrames: prep.n,
+      skippedFrames: 0,
+      framesSilenceTotal: 0,
+      framesSilenceKept: 0,
+      framesSilenceRemoved: 0,
+      speechFrames: prep.n,
       centroidNormalized: true
     };
   }
@@ -403,11 +264,11 @@
     model.framesUsed = usedFrames;
     model.framesSkipped = skippedFrames || 0;
 
-    model.framesSilenceTotal = framesSilenceTotal;
-    model.framesSilenceKept = framesSilenceKept;
-    model.framesSilenceRemoved = framesSilenceRemoved;
-    model.speechFrames = speechFrames;
-    model.silenceFilterEnabled = !!cfg.silenceFilterEnabled;
+    model.framesSilenceTotal = framesSilenceTotal || 0;
+    model.framesSilenceKept = framesSilenceKept || 0;
+    model.framesSilenceRemoved = framesSilenceRemoved || 0;
+    model.speechFrames = speechFrames || usedFrames;
+    model.silenceFilterEnabled = false; // agora desnecessário
     model.centroidNormalized = !!centroidNormalized;
 
     window._pcaModel = model;
