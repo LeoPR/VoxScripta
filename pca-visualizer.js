@@ -1,10 +1,10 @@
 // pca-visualizer.js
 // Visualizador de projeções PC1 x PC2 com cache por assinatura do modelo PCA.
 // Ajustes:
-// - Usa por padrão apenas gravações do Train Pool (fallback: todas do workspace se Train Pool vazio).
-// - A seleção (Train Pool vs Workspace) entra na assinatura do cache.
-// - Mostra "Fonte: ..." na legenda.
-// - Mantém a invalidação por __updatedAt do modelo.
+// - Ao encontrar window._kmeansModel, colore pontos por cluster (usando as 2 primeiras dimensões dos centróides).
+// - Export CSV inclui campo 'cluster' quando disponível.
+// - Legenda mostra clusters (quando houver) e depois gravações (como antes).
+// - Invalida cache quando window._pcaModel.__updatedAt muda.
 
 (function(){
   'use strict';
@@ -50,7 +50,7 @@
     return (window.segmentSilence || (window.analyzerOverlay && window.analyzerOverlay.segmentSilence));
   }
 
-  // Assinatura do modelo PCA (inclui __updatedAt se existir)
+  // Gera assinatura do modelo PCA para identificar mudanças
   function modelSignature(model) {
     if (!model || !model.components) return 'no-model';
     let h = 5381;
@@ -65,42 +65,14 @@
     for (let i = 0; i < comps.length; i += step) {
       const v = Math.round((comps[i] || 0) * 1e6);
       h = ((h << 5) + h) ^ (v & 0xFFFFFFFF);
-      const mi = mean[i % (mean.length || 1)] || 0;
+      const mi = mean[i % mean.length] || 0;
       const mv = Math.round(mi * 1e6);
       h = ((h << 5) + h) ^ (mv & 0xFFFFFFFF);
     }
     return 'm' + (h >>> 0).toString(16);
   }
 
-  // Seleção para visualização: prioriza Train Pool; fallback = workspace
-  function getSelectionForVisualization() {
-    const all = (typeof window.getWorkspaceRecordings === 'function') ? (window.getWorkspaceRecordings() || []) : (window.recordings || []);
-    let ids = [];
-    try {
-      if (window.uiAnalyzer && typeof window.uiAnalyzer.getTrainPool === 'function') {
-        ids = window.uiAnalyzer.getTrainPool() || [];
-      }
-    } catch (_) { ids = []; }
-
-    if (Array.isArray(ids) && ids.length) {
-      const selected = ids.map(id => all.find(r => r && String(r.id) === String(id))).filter(Boolean);
-      if (selected.length) {
-        return {
-          recs: selected,
-          label: `Train Pool (${selected.length} gravação(ões))`,
-          signature: 'train:' + ids.map(String).join(',')
-        };
-      }
-    }
-    // fallback
-    return {
-      recs: all,
-      label: `Workspace (todas) (${all.length} gravação(ões))`,
-      signature: 'workspace:all'
-    };
-  }
-
-  // Computa projeções PC1×PC2 para um conjunto específico de gravações
+  // Calcula projeções PC1×PC2 (mesmo código que já existia)
   async function computeProjectionsPC12(recsToUse) {
     if (!window._pcaModel) throw new Error('Modelo PCA não encontrado. Execute o PCA primeiro.');
     const model = window._pcaModel;
@@ -111,10 +83,9 @@
     const minSilenceFrames = pcaCfg.minSilenceFrames || 5;
     const minSpeechFrames = pcaCfg.minSpeechFrames || 3;
 
-    const recs = Array.isArray(recsToUse) ? recsToUse : [];
-    if (!recs || !recs.length) throw new Error('Sem gravações para visualizar (selecione no Train Pool ou adicione ao workspace).');
+    const recs = Array.isArray(recsToUse) ? recsToUse : (typeof window.getWorkspaceRecordings === 'function' ? window.getWorkspaceRecordings() : (window.recordings || []));
+    if (!recs || !recs.length) throw new Error('Sem gravações para visualizar.');
 
-    // Coletar features e achar RMS máximo global (para segmentação)
     const loaded = [];
     let dims = null;
     let globalMaxRms = 0;
@@ -191,8 +162,8 @@
     return { points: allPoints, perRecCounts };
   }
 
-  // Desenha scatter PC1×PC2 em canvas simples — aceita bbox opcional para escala fixa
-  function drawScatter(canvas, points, colorForRec, bbox) {
+  // Desenha scatter PC1×PC2
+  function drawScatter(canvas, points, colorForPoint, bbox) {
     const ctx = canvas.getContext('2d');
     const w = canvas.width, h = canvas.height;
     ctx.clearRect(0,0,w,h);
@@ -239,8 +210,8 @@
       const cx = sx(p.x);
       const cy = sy(p.y);
       ctx.beginPath();
-      ctx.arc(cx, cy, 2.2, 0, Math.PI*2);
-      ctx.fillStyle = colorForRec(p.recId);
+      ctx.arc(cx, cy, 2.6, 0, Math.PI*2);
+      ctx.fillStyle = colorForPoint(p);
       ctx.fill();
     }
 
@@ -263,39 +234,73 @@
     ];
   }
 
-  function buildLegend(container, recsOrder, colorForRec, countsMap, sourceInfo){
+  function buildLegend(container, recsOrder, colorForRec, countsMap, sourceInfo, kmeansInfo) {
     container.innerHTML = '';
-    if (sourceInfo) {
-      const cap = document.createElement('div');
-      cap.style.fontSize = '12px';
-      cap.style.color = '#666';
-      cap.style.margin = '2px 0 6px 0';
-      cap.textContent = `Fonte: ${sourceInfo}`;
-      container.appendChild(cap);
+    const title = document.createElement('div');
+    title.style.fontSize = '12px';
+    title.style.color = '#666';
+    title.style.margin = '2px 0 6px 0';
+    title.textContent = sourceInfo || '';
+    container.appendChild(title);
+
+    // Se houver KMeans, mostrar clusters primeiro
+    if (kmeansInfo && kmeansInfo.k && Array.isArray(kmeansInfo.sizes)) {
+      const h = document.createElement('div');
+      h.style.marginBottom = '6px';
+      h.innerHTML = `<div style="font-size:12px;"><b>Clusters (KMeans):</b> ${kmeansInfo.k} &nbsp; Inércia: ${kmeansInfo.inertia ? kmeansInfo.inertia.toFixed(3) : '—'}</div>`;
+      container.appendChild(h);
+
+      const ulc = document.createElement('ul');
+      ulc.style.listStyle = 'none';
+      ulc.style.margin = '4px 0 8px 0';
+      ulc.style.padding = '0';
+      ulc.style.display = 'flex';
+      ulc.style.flexWrap = 'wrap';
+      ulc.style.gap = '10px';
+      for (let i=0;i<kmeansInfo.k;i++){
+        const li = document.createElement('li');
+        const sw = document.createElement('span');
+        sw.style.display = 'inline-block';
+        sw.style.width = '12px';
+        sw.style.height = '12px';
+        sw.style.borderRadius = '3px';
+        sw.style.background = kmeansInfo.colors[i] || '#888';
+        sw.style.marginRight = '6px';
+        const label = document.createElement('span');
+        label.textContent = `C${i} (${kmeansInfo.sizes[i]||0})`;
+        li.appendChild(sw);
+        li.appendChild(label);
+        ulc.appendChild(li);
+      }
+      container.appendChild(ulc);
     }
-    const ul = document.createElement('ul');
-    ul.style.listStyle = 'none';
-    ul.style.margin = '0';
-    ul.style.padding = '0';
-    ul.style.display = 'flex';
-    ul.style.flexWrap = 'wrap';
-    ul.style.gap = '10px';
-    for (const {id, name} of recsOrder){
-      const li = document.createElement('li');
-      const sw = document.createElement('span');
-      sw.style.display = 'inline-block';
-      sw.style.width = '12px';
-      sw.style.height = '12px';
-      sw.style.borderRadius = '3px';
-      sw.style.background = colorForRec(id);
-      sw.style.marginRight = '6px';
-      const label = document.createElement('span');
-      label.textContent = `${name || id} (${countsMap.get(id)||0})`;
-      li.appendChild(sw);
-      li.appendChild(label);
-      ul.appendChild(li);
+
+    // Legenda de gravações (como antes)
+    if (recsOrder && recsOrder.length) {
+      const ul = document.createElement('ul');
+      ul.style.listStyle = 'none';
+      ul.style.margin = '8px 0 0 0';
+      ul.style.padding = '0';
+      ul.style.display = 'flex';
+      ul.style.flexWrap = 'wrap';
+      ul.style.gap = '10px';
+      for (const {id, name} of recsOrder){
+        const li = document.createElement('li');
+        const sw = document.createElement('span');
+        sw.style.display = 'inline-block';
+        sw.style.width = '12px';
+        sw.style.height = '12px';
+        sw.style.borderRadius = '3px';
+        sw.style.background = colorForRec(id);
+        sw.style.marginRight = '6px';
+        const label = document.createElement('span');
+        label.textContent = `${name || id} (${countsMap.get(id)||0})`;
+        li.appendChild(sw);
+        li.appendChild(label);
+        ul.appendChild(li);
+      }
+      container.appendChild(ul);
     }
-    container.appendChild(ul);
   }
 
   function createVisModal() {
@@ -362,15 +367,18 @@
 
   let _lastPoints = null;
   let _lastRecsOrder = null;
+  let _lastKMeansAssignments = null; // parallel to _lastPoints: cluster index or null
 
   function exportCSVFromLast(){
     if (!_lastPoints || !_lastPoints.length) {
       alert('Sem dados para exportar. Gere a visualização primeiro.');
       return;
     }
-    const rows = [['recordingId','recordingName','frameIndex','timeSec','PC1','PC2']];
-    for (const p of _lastPoints) {
-      rows.push([p.recId, p.recName, p.frame, p.timeSec, p.x, p.y]);
+    const rows = [['recordingId','recordingName','frameIndex','timeSec','PC1','PC2','cluster']];
+    for (let i=0; i<_lastPoints.length; i++) {
+      const p = _lastPoints[i];
+      const cluster = (_lastKMeansAssignments && _lastKMeansAssignments[i] !== undefined && _lastKMeansAssignments[i] !== null) ? _lastKMeansAssignments[i] : '';
+      rows.push([p.recId, p.recName, p.frame, p.timeSec, p.x, p.y, cluster]);
     }
     const csv = rows.map(r => r.map(v => String(v).replace(/"/g,'""')).map(v=>`"${v}"`).join(',')).join('\n');
     const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
@@ -401,17 +409,17 @@
       window._pcaVisualizerCache._lastModelUpdatedAt = updatedAt;
 
       // Seleção: prioriza Train Pool
-      const selection = getSelectionForVisualization();
-      const selectionSig = selection.signature; // ex: "train:id1,id2" ou "workspace:all"
+      const trainIds = (window.uiAnalyzer && typeof window.uiAnalyzer.getTrainPool === 'function') ? window.uiAnalyzer.getTrainPool() : [];
+      const recsAll = (typeof window.getWorkspaceRecordings === 'function') ? window.getWorkspaceRecordings() : (window.recordings || []);
+      const selection = (Array.isArray(trainIds) && trainIds.length)
+        ? { recs: trainIds.map(id => recsAll.find(r => r && String(r.id) === String(id))).filter(Boolean), label: `Train Pool (${trainIds.length} gravação(ões))`, signature: 'train:' + trainIds.join(',') }
+        : { recs: recsAll, label: `Workspace (todas) (${(recsAll || []).length} gravação(ões))`, signature: 'workspace:all' };
 
-      const signature = modelSignature(window._pcaModel) + '|' + selectionSig;
-      // Verifica cache
+      const signature = modelSignature(window._pcaModel) + '|' + selection.signature;
       let cached = window._pcaVisualizerCache[signature];
 
       if (!cached) {
-        // calcular projeções e bbox
         const { points, perRecCounts } = await computeProjectionsPC12(selection.recs);
-        // determinar bbox
         let minX=Infinity, maxX=-Infinity, minY=Infinity, maxY=-Infinity;
         for (const p of points) {
           if (p.x < minX) minX = p.x; if (p.x > maxX) maxX = p.x;
@@ -420,7 +428,6 @@
         if (!isFinite(minX) || !isFinite(maxX)) { minX=-1; maxX=1; }
         if (!isFinite(minY) || !isFinite(maxY)) { minY=-1; maxY=1; }
 
-        // Ordem das gravações (seleção)
         const palette = colorPalette();
         const recsOrder = selection.recs.map((r,i)=>({ id:r.id, name:r.name || String(r.id), color: palette[i % palette.length] }));
 
@@ -428,20 +435,64 @@
           points,
           perRecCounts,
           bbox: { minX, maxX, minY, maxY },
-          recsOrder,
-          sourceInfo: selection.label
+          recsOrder
         };
         window._pcaVisualizerCache[signature] = cached;
       }
 
       const { modal, canvas, legend } = createVisModal();
 
-      // Preparar cores por gravação (usar recsOrder do cache para consistência)
+      // Preparar cores por gravação
       const recsOrder = cached.recsOrder || [];
       const colorForRec = (id) => {
         const idx = recsOrder.findIndex(rr => String(rr.id) === String(id));
         return (idx>=0) ? recsOrder[idx].color : '#888';
+      };
+
+      // Verificar KMeans e preparar cores por cluster se houver
+      const kmodel = window._kmeansModel;
+      let useClusters = false;
+      let clusterColors = [];
+      let kinfo = null;
+      let assignments = null;
+      if (kmodel && kmodel.k && kmodel.centroids) {
+        useClusters = true;
+        const k = kmodel.k;
+        // escolher cores para clusters (reusar palette circulando)
+        const pal = colorPalette();
+        for (let ci=0; ci<k; ci++) clusterColors[ci] = pal[ci % pal.length];
+
+        // calcular assignment por ponto usando apenas as 2 primeiras dimensões dos centróides
+        // (se kmeans foi treinado em mais dims, usamos aproximação pelas 2 primeiras dims)
+        const centroids = kmodel.centroids;
+        const cDim = kmodel.dim || 2;
+        const centroids2 = [];
+        for (let ci=0; ci<k; ci++){
+          const base = ci * cDim;
+          const cx = (cDim >= 1) ? (centroids[base + 0] || 0) : 0;
+          const cy = (cDim >= 2) ? (centroids[base + 1] || 0) : 0;
+          centroids2.push({ cx, cy });
+        }
+
+        assignments = new Array(cached.points.length);
+        for (let i=0;i<cached.points.length;i++){
+          const p = cached.points[i];
+          let best = 0, bestD = Infinity;
+          for (let ci=0; ci<k; ci++){
+            const d0 = p.x - centroids2[ci].cx;
+            const d1 = p.y - centroids2[ci].cy;
+            const d2 = d0*d0 + d1*d1;
+            if (d2 < bestD) { bestD = d2; best = ci; }
+          }
+          assignments[i] = best;
+        }
+
+        kinfo = {
+          k: kmodel.k,
+          inertia: (kmodel.inertia !== undefined ? kmodel.inertia : null),
+          sizes: Array.isArray(kmodel.clusterSizes) ? Array.from(kmodel.clusterSizes) : (kmodel.clusterSizes && Array.from(kmodel.clusterSizes) || [])
         };
+      }
 
       // Mensagem de carregamento simples
       const ctx = canvas.getContext('2d');
@@ -452,9 +503,18 @@
 
       _lastPoints = cached.points;
       _lastRecsOrder = recsOrder;
+      _lastKMeansAssignments = assignments || null;
 
-      drawScatter(canvas, cached.points, colorForRec, cached.bbox);
-      buildLegend(legend, recsOrder, colorForRec, cached.perRecCounts || new Map(), cached.sourceInfo);
+      const colorForPoint = (p, idx) => {
+        if (useClusters && _lastKMeansAssignments && _lastKMeansAssignments[idx] !== undefined && _lastKMeansAssignments[idx] !== null) {
+          const ci = _lastKMeansAssignments[idx];
+          return clusterColors[ci] || '#333';
+        }
+        return colorForRec(p.recId);
+      };
+
+      drawScatter(canvas, cached.points, (p)=> colorForPoint(p, cached.points.indexOf(p)), cached.bbox);
+      buildLegend(legend, recsOrder, colorForRec, cached.perRecCounts || new Map(), selection.label, kinfo ? Object.assign({}, kinfo, { colors: clusterColors }) : null);
 
     } catch (err) {
       console.error('pca-visualizer: erro ao abrir visualização:', err);
@@ -462,7 +522,7 @@
     }
   }
 
-  // Injeta botão no modal PCA assim que ele aparecer
+  // Injeta botão no modal PCA
   function injectButtonIfNeeded(root){
     try {
       let modal = null;
@@ -505,7 +565,6 @@
     mo.observe(document.body, { childList: true, subtree: true });
   } catch (_) {}
 
-  // Tenta injetar imediatamente caso o modal já exista
   try { injectButtonIfNeeded(document); } catch (_) {}
 
   // Expor API pública

@@ -18,11 +18,12 @@
 // - reassessInertiaEvery: frequência (em iterações) para recomputar inércia aproximada (default 0 = só no final)
 // - normalizeZ: normalizar Z por variância de cada dimensão (default false)
 // - maxPointsForPreview: quantos pontos amostrar para assignmentsPreview (default 2000)
+// - progressCb: função opcional(progress) chamada com valor entre 0 e 1
 //
 // Observações:
 // - Exige que window._pcaModel exista (rode o PCA antes).
 // - Usa pca-data-prep; segmentação de fala e filtros já foram validados no seu pipeline.
-// - Sem UI própria; o arquivo kmeans-ui.js insere um botão no modal do PCA para rodar e mostrar resumo.
+// - Sem UI própria; kmeans-ui.js insere um botão no modal do PCA para rodar e mostrar resumo.
 
 (function(){
   'use strict';
@@ -50,7 +51,7 @@
   function dist2_flat(flat, baseA, baseB, dim) {
     let s = 0;
     for (let i=0;i<dim;i++){
-      const d = flat[baseA+i] - flat[baseB+i];
+      const d = (flat[baseA+i] || 0) - (flat[baseB+i] || 0);
       s += d*d;
     }
     return s;
@@ -85,10 +86,9 @@
       let sum = 0;
       for (let i=0;i<n;i++) sum += dists[i];
       const r = rng() * (sum || 1);
-      let acc = 0, pick = 0;
+      let acc = 0, pick = n-1;
       for (let i=0;i<n;i++){ acc += dists[i]; if (acc >= r) { pick = i; break; } }
       chosen[c] = pick;
-      // escrever novo centróide
       const baseC = c*dim;
       for (let d=0; d<dim; d++) centroids[baseC + d] = Zflat[pick*dim + d];
       // atualizar dists com novo centro
@@ -147,23 +147,25 @@
     const trainIds = (window.uiAnalyzer && window.uiAnalyzer.getTrainPool) ? window.uiAnalyzer.getTrainPool() : [];
     if (!trainIds.length) throw new Error('Train Pool vazio.');
 
+    // pedir os dados processados pelo pca-data-prep
     const prep = await window.pcaDataPrep.prepareDataForPCA(trainIds, {
       useSegmentSpeech: true,
       keepSilenceFraction: 0.0,
       applyZScore: false,
       contextWindow: 0
     });
+
     const model = window._pcaModel;
-    const Z = model.transformMatrix(prep.dataMatrix); // Float32/64, n x model.k (flattened)
+    // projetar a matriz preparada (dataMatrix) no PCA
+    const Zfull = model.transformMatrix(prep.dataMatrix); // flattened n x model.k
     const n = prep.n;
     const modelK = model.k || 2;
     const dim = Math.min(Math.max(1, pcaDims || 2), modelK);
 
-    // extrair primeiras 'dim' colunas de Z
     const Zflat = new Float32Array(n * dim);
     for (let i=0;i<n;i++){
       for (let d=0; d<dim; d++){
-        Zflat[i*dim + d] = Z[i*modelK + d] || 0;
+        Zflat[i*dim + d] = Zfull[i*modelK + d] || 0;
       }
     }
     return { Zflat, n, dim, framesIndexMap: prep.framesIndexMap || [], trainIds, prep };
@@ -195,30 +197,25 @@
     const centroids = kmeansPlusPlusInit(Zflat, n, dim, cfg.k, cfg.seed);
     const counts = new Int32Array(cfg.k); // contagem de updates por centro
 
-    const rng = Number.isFinite(cfg.seed) ? mulberry32(cfg.seed >>> 0) : Math.random;
-    const totalIters = Math.ceil((n / Math.max(1,cfg.batchSize)) * Math.max(1,cfg.epochs));
+    const totalBatches = Math.ceil(n / Math.max(1, cfg.batchSize));
+    const totalIters = totalBatches * Math.max(1, cfg.epochs);
     let iter = 0;
 
     for (let epoch = 0; epoch < Math.max(1,cfg.epochs); epoch++) {
-      // percorre em batches aleatórios
-      let i = 0;
-      while (i < n) {
-        const remain = n - i;
-        const bsz = Math.min(cfg.batchSize, remain);
-        // amostrar índices [i..i+bsz) de forma baralhada simples (ou escolher sequência)
-        const start = i;
-        // atualização online por ponto no batch
-        for (let bi=0; bi<bsz; bi++) {
+      // iteração simples por sequência (evita embaralhar para reprodutibilidade); se quiser randomizar, usar rng
+      for (let start = 0; start < n; start += cfg.batchSize) {
+        const bsz = Math.min(cfg.batchSize, n - start);
+
+        for (let bi = 0; bi < bsz; bi++) {
           const idx = start + bi;
           const base = idx * dim;
-          // nearest centroide
-          let bestC = 0;
-          let bestD = Infinity;
+          // encontra centro mais próximo
+          let bestC = 0, bestD = Infinity;
           for (let c=0;c<cfg.k;c++){
             const d2 = dist2_flat(Zflat, base, c*dim, dim);
             if (d2 < bestD) { bestD = d2; bestC = c; }
           }
-          // update: média incremental (eta = 1 / (counts+1))
+          // update incremental (eta = 1 / (counts+1))
           counts[bestC] += 1;
           const eta = 1 / counts[bestC];
           const cBase = bestC * dim;
@@ -229,9 +226,8 @@
           }
         }
 
-        i += bsz;
         iter++;
-        if (progressCb && (iter % 5 === 0)) {
+        if (progressCb && typeof progressCb === 'function') {
           progressCb(Math.min(1, iter / totalIters));
         }
       }
@@ -294,7 +290,6 @@
       warnings,
       __updatedAt: Date.now(),
       predict(x) {
-        // x: Float32Array/Array length dim (já no espaço PCA de 'dim' dimensões)
         let bestC = 0, bestD = Infinity;
         for (let c=0;c<this.k;c++){
           const d2 = dist2_vec_point(this.centroids, c*this.dim, x, this.dim);
@@ -303,7 +298,6 @@
         return bestC;
       },
       assignMatrix(ZmatFlat, nRows, dimIn) {
-        // Se dimIn > this.dim, usa as primeiras this.dim colunas
         const out = new Int32Array(nRows);
         for (let r=0;r<nRows;r++){
           let bestC = 0, bestD = Infinity;
