@@ -1,16 +1,8 @@
 // pca-data-prep.js
 // Preparador de matriz para PCA / clustering a partir do Train Pool.
-// Adição: retorna segmentsSummary por gravação (contagens de segmentos/frames de fala e silêncio, frames selecionados e silêncio mantido).
+// Adição: retorna segmentsSummary por gravação com percentuais de aproveitamento.
 //
 // Expor window.pcaDataPrep.prepareDataForPCA(trainIds?, options?) e buildContextVector.
-//
-// Uso:
-//   const res = await window.pcaDataPrep.prepareDataForPCA();
-//   // res: {
-//   //   dataMatrix: Float32Array, n, d, meta,
-//   //   perRecordingCounts, framesIndexMap,
-//   //   segmentsSummary: { [recId]: { speechSegmentsCount, silenceSegmentsCount, speechFrames, silenceFrames, selectedFrames, keptSilenceFrames } }
-//   // }
 
 (function(){
   'use strict';
@@ -129,8 +121,6 @@
       contextWindow: 0,
       sampleLimitTotal: 20000,
       clampAbsValue: 1e3,
-
-      // Filtros robustos de fala:
       minRmsAbsolute: 0.002,
       minMelSumRatio: 0.02
     }, options || {});
@@ -146,9 +136,8 @@
     const selectedRecs = trainPoolIds.map(id => recs.find(r => r && String(r.id) === String(id))).filter(Boolean);
     if (!selectedRecs.length) throw new Error('Nenhuma gravação válida encontrada no Train Pool.');
 
-    // descobrir globalMaxRms
     let globalMaxRms = 0;
-    const collectedFeatures = []; // {rec, fr}
+    const collectedFeatures = [];
     let dims = null;
     let nMels = null;
     let sampleRate = 16000;
@@ -175,12 +164,11 @@
     if (!collectedFeatures.length) throw new Error('Nenhuma feature válida coletada.');
 
     const safeGlobalMaxRms = Math.max(globalMaxRms, 1e-12);
-
     const segFn = (window.segmentSilence || (window.analyzerOverlay && window.analyzerOverlay.segmentSilence));
     const useSeg = opts.useSegmentSpeech && typeof segFn === 'function';
 
     const perRecordingCounts = new Map();
-    const segmentsSummary = {}; // por recId (string)
+    const segmentsSummary = {};
     const selectedVectors = [];
     const framesIndexMap = [];
 
@@ -189,7 +177,6 @@
       const frames = fr.shape.frames;
       const rmsIdx = nMels;
 
-      // Arrays auxiliares
       const rmsArr = new Float32Array(frames);
       const melSumArr = new Float32Array(frames);
       let maxMelSumLocal = 0;
@@ -207,7 +194,6 @@
         if (ms > maxMelSumLocal) maxMelSumLocal = ms;
       }
 
-      // ignora gravação silenciosa
       const localMaxRms = Math.max(...rmsArr);
       if (!Number.isFinite(localMaxRms) || localMaxRms <= 1e-9) {
         console.warn('pca-data-prep: gravação ignorada (RMS máximo ~0):', rec && rec.id);
@@ -218,7 +204,9 @@
           speechFrames: 0,
           silenceFrames: frames,
           selectedFrames: 0,
-          keptSilenceFrames: 0
+          keptSilenceFrames: 0,
+          percentSelectedOfSpeech: 0,
+          percentSelectedOfTotal: 0
         };
         continue;
       }
@@ -250,12 +238,10 @@
         }
       }
 
-      // thresholds finais
       const thrRmsRelative = (opts.rmsRatioThreshold || 0.0) * safeGlobalMaxRms;
       const thrRms = Math.max(thrRmsRelative, opts.minRmsAbsolute || 0);
       const thrMelSum = (opts.minMelSumRatio || 0) * (maxMelSumLocal || 1);
 
-      // manter fração de silêncio (opcional)
       const chosenSilence = [];
       if (opts.keepSilenceFraction > 0 && silenceIdxs.length > 0) {
         const totalLocal = silenceIdxs.length + speechIdxs.length;
@@ -269,7 +255,6 @@
       let candFrames = speechIdxs.concat(chosenSilence);
       candFrames.sort((a,b) => a - b);
 
-      // filtros robustos (RMS e mel-sum)
       candFrames = candFrames.filter(f => {
         const r = rmsArr[f];
         const ms = melSumArr[f];
@@ -278,7 +263,6 @@
         return okR && okM;
       });
 
-      // limitar máximo por gravação
       const maxPerRec = Math.max(1, Math.floor(opts.maxFramesPerRecording));
       if (candFrames.length > maxPerRec) {
         const step = candFrames.length / maxPerRec;
@@ -287,17 +271,14 @@
         candFrames = sampled;
       }
 
-      // context + normalizações
       let added = 0;
       for (const fIdx of candFrames) {
         const vec = buildContextVector(flat, frames, dims, fIdx, Math.max(0, Math.floor(opts.contextWindow)));
-        // log1p nas mels
         for (let m = 0; m < nMels && m < vec.length; m++) {
           let v = vec[m];
           if (!Number.isFinite(v) || v < 0) v = 0;
           vec[m] = Math.log1p(v);
         }
-        // normalização dos scalars
         if (vec.length > nMels) {
           const origRms = vec[nMels];
           const safeLocalMaxRms = Math.max(localMaxRms, 1e-12);
@@ -313,7 +294,6 @@
           vec[nMels + 2] = Number.isFinite(z) ? z : 0;
         }
 
-        // clipping
         const clamp = opts.clampAbsValue || 1e3;
         clampInplace(vec, -clamp, clamp);
 
@@ -325,13 +305,23 @@
       }
 
       perRecordingCounts.set(rec.id, added);
+
+      // percentuais seguros
+      const speechFrames = speechIdxs.length || 0;
+      const silenceFrames = silenceIdxs.length || 0;
+      const totalFramesRec = speechFrames + silenceFrames || frames || 0;
+      const percentSelectedOfSpeech = speechFrames > 0 ? (added / speechFrames) * 100 : 0;
+      const percentSelectedOfTotal = totalFramesRec > 0 ? (added / totalFramesRec) * 100 : 0;
+
       segmentsSummary[String(rec.id)] = {
         speechSegmentsCount,
         silenceSegmentsCount,
-        speechFrames: speechIdxs.length,
-        silenceFrames: silenceIdxs.length,
+        speechFrames,
+        silenceFrames,
         selectedFrames: added,
-        keptSilenceFrames: chosenSilence.length
+        keptSilenceFrames: chosenSilence.length,
+        percentSelectedOfSpeech: Number(percentSelectedOfSpeech.toFixed(2)),
+        percentSelectedOfTotal: Number(percentSelectedOfTotal.toFixed(2))
       };
 
       if (selectedVectors.length >= opts.sampleLimitTotal) break;

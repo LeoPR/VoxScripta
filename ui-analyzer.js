@@ -1,6 +1,5 @@
-// ui-analyzer.js — adiciona seção "Segmentação usada no treino" no modal do PCA.
-// - incremental: mostra por gravação (contagens de segmentos/frames, incluídos/excluídos)
-// - batch diagnóstico: idem, quando disponível
+// ui-analyzer.js — adiciona percentuais por gravação na seção "Segmentação usada no treino".
+// Mantém as demais funcionalidades existentes (diagnóstico pré/pós, PCA batch, etc).
 
 (function () {
   'use strict';
@@ -184,8 +183,6 @@
     }
   }
 
-  // ========= Helpers de renderização =========
-
   function renderPreDiagHTML(pre){
     if (!pre) return '<div style="color:#c00;">Sem dados pré-PCA.</div>';
     const r = pre.rms;
@@ -349,8 +346,7 @@
     return m;
   }
 
-  // ========= Nova seção: Segmentação do treino =========
-
+  // Render da seção de segmentação com percentuais
   function renderSegmentsSummaryHTML(model) {
     const summary = model && model.segmentsSummary;
     if (!summary || !Object.keys(summary).length) return '';
@@ -367,6 +363,8 @@
       totalSpeechFrames += s.speechFrames || 0;
       totalSilenceFrames += s.silenceFrames || 0;
       totalKeptSilence += s.keptSilenceFrames || 0;
+      const pSpeech = (typeof s.percentSelectedOfSpeech === 'number') ? `${s.percentSelectedOfSpeech}%` : '0%';
+      const pTotal = (typeof s.percentSelectedOfTotal === 'number') ? `${s.percentSelectedOfTotal}%` : '0%';
       return `
         <li style="margin:2px 0;">
           <b>${escapeHTML(nameOf(id))}</b> —
@@ -374,9 +372,15 @@
           frames fala (antes filtros): ${s.speechFrames||0} |
           silêncio (antes): ${s.silenceFrames||0} |
           selecionados p/ treino: ${s.selectedFrames||0}${(s.keptSilenceFrames?` (silêncio mantido: ${s.keptSilenceFrames})`:'')}
+          <div style="font-size:11px;color:#444;margin-top:2px;">
+            Aproveitamento: ${pSpeech} da fala &nbsp; | &nbsp; ${pTotal} do total
+          </div>
         </li>
       `;
     }).join('');
+
+    const overallPercentSpeech = totalSpeechFrames > 0 ? ((totalSelected / totalSpeechFrames) * 100).toFixed(2) : '0.00';
+    const overallPercentTotal = (totalSpeechFrames + totalSilenceFrames) > 0 ? ((totalSelected / (totalSpeechFrames + totalSilenceFrames)) * 100).toFixed(2) : '0.00';
 
     return `
       <div style="margin-top:14px;border-top:1px solid #eee;padding-top:10px;">
@@ -386,14 +390,20 @@
             ${items}
           </ul>
           <div style="color:#444;">
-            <b>Totais:</b> selecionados: ${totalSelected} | fala (pré-filtros): ${totalSpeechFrames} | silêncio (pré-filtros): ${totalSilenceFrames} | silêncio mantido: ${totalKeptSilence}
+            <b>Totais:</b> selecionados: ${totalSelected} |
+            fala (pré-filtros): ${totalSpeechFrames} |
+            silêncio (pré-filtros): ${totalSilenceFrames} |
+            silêncio mantido: ${totalKeptSilence}
+            <div style="margin-top:6px;color:#333;font-size:12px;">
+              Aproveitamento geral: ${overallPercentSpeech}% da fala | ${overallPercentTotal}% do total
+            </div>
           </div>
         </div>
       </div>
     `;
   }
 
-  // ========= PCA handlers =========
+  // ========== PCA handlers (trechos omitidos já existentes) ==========
 
   async function runPCAHandler() {
     if (!window.runIncrementalPCAOnTrainPool) {
@@ -471,7 +481,6 @@
         model.cumulativeVariance
       );
 
-      // Pós diag
       let postDiag = null;
       try {
         postDiag = window.pcaDiagnostics.collectPost(model, preDiag);
@@ -485,13 +494,11 @@
         );
       }
 
-      // Nova seção: Segmentação usada no treino
       const segHTML = renderSegmentsSummaryHTML(model);
       if (segHTML) {
         modal.querySelector('.pca-body').insertAdjacentHTML('beforeend', segHTML);
       }
 
-      // Rodapé
       modal.querySelector('.pca-body').insertAdjacentHTML(
         'beforeend',
         `<div style="margin-top:10px;font-size:12px;">
@@ -536,7 +543,6 @@
       const k = Math.min(8, res.d || 8);
       const model = window.pcaBatch.computePCA(res.dataMatrix, res.n, res.d, { k });
 
-      // anexar segmento para UI e tornar "oficial"
       try {
         model.segmentsSummary = res.segmentsSummary || {};
         model.__updatedAt = Date.now();
@@ -567,7 +573,6 @@
         model.cumulativeVariance
       );
 
-      // Segmentação usada no batch
       const segHTML = renderSegmentsSummaryHTML(model);
       if (segHTML) section.insertAdjacentHTML('beforeend', segHTML);
 
