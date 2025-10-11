@@ -1,9 +1,7 @@
 // kmeans-auto-ui.js
 // UI mínima "Auto K" para KMeans: testa K de Kmin..Kmax com nInit, mostra métricas e permite selecionar K.
-// - Depende de: window._pcaModel (ativo) e dados para clusterizar (projetados pelo PCA).
-// - Coleta dataset projetado do Train Pool (frames de fala) se rec.__featuresCache existir.
-// - Desenha gráficos simples (inertia e silhouette) e lista de resultados com botão "Selecionar".
-// - Ao selecionar, cria window._kmeansModel compatível com overlay/visualizador e dispara 'training-changed'.
+// Integração mínima com pipeline existente; usa PCA ativo para projetar features.
+// Requisitos: window._pcaModel, uiAnalyzer.getTrainPool() (ou train pool ID list) e rec.__featuresCache.
 
 (function(){
   'use strict';
@@ -69,30 +67,31 @@
     const idxs = [];
     for (let i=0;i<mask.length;i++) if (mask[i]) idxs.push(i);
     if (!targetMax || idxs.length <= targetMax) return idxs;
-    // downsample uniforme
     const step = Math.ceil(idxs.length / targetMax);
     const out = [];
     for (let i=0; i<idxs.length; i+=step) out.push(idxs[i]);
     return out;
   }
 
-  function buildProjectedDatasetFromTrainPool(maxPoints=5000, kDims=2) {
+  // Projetar: retorna Xflat para clustering (dimCluster) e X2d para visual (2D)
+  function buildProjectedDatasetFromTrainPool(maxPoints=5000, dimCluster=6) {
     if (!window._pcaModel) throw new Error('PCA ativo ausente. Rode e selecione um treinamento.');
     const pca = window._pcaModel;
 
-    // obter train pool
     const trainPool = (window.uiAnalyzer && typeof window.uiAnalyzer.getTrainPool === 'function')
       ? window.uiAnalyzer.getTrainPool()
       : [];
     if (!trainPool || !trainPool.length) throw new Error('Train Pool vazio. Adicione gravações ao Train Pool.');
 
-    // map rec ids -> rec objects
     const recs = (typeof window.getWorkspaceRecordings === 'function') ? window.getWorkspaceRecordings() : (window.recordings || []);
     const byId = new Map();
     for (const r of recs) if (r && r.id != null) byId.set(r.id, r);
 
-    const points = [];
+    const points = []; // high-dim
+    const points2 = []; // 2d for plot
     let dims = null, nMels = null, sampleRate = 16000;
+
+    const perRecCap = Math.max(2, Math.ceil(maxPoints / Math.max(1, trainPool.length)));
 
     for (const id of trainPool) {
       const rec = typeof id === 'object' ? id : byId.get(id);
@@ -103,7 +102,7 @@
       sampleRate = (fr.meta && fr.meta.sampleRate) ? fr.meta.sampleRate : 16000;
 
       const mask = segmentSpeechMask(fr);
-      const idxs = sampleFramesIdx(mask, Math.ceil(maxPoints / trainPool.length));
+      const idxs = sampleFramesIdx(mask, perRecCap);
 
       const flat = fr.features;
       for (const f of idxs) {
@@ -111,29 +110,39 @@
         const vec = new Float32Array(dims);
         for (let d=0; d<dims; d++) vec[d] = flat[base + d];
         normalizeFeatureVector(vec, nMels, sampleRate);
-        const proj = pca.project(vec);
-        const x = new Float32Array(kDims);
-        for (let d=0; d<kDims; d++) x[d] = proj[d] || 0;
-        points.push(x);
+        const proj = pca.project(vec); // proj length = pca.k
+        // cluster dims: first dimCluster components (or less)
+        const cd = Math.min(dimCluster, proj.length);
+        const clusterVec = new Float32Array(cd);
+        for (let d=0; d<cd; d++) clusterVec[d] = proj[d] || 0;
+        points.push(clusterVec);
+        // visual 2D (first 2 comps)
+        const v2 = new Float32Array(2);
+        v2[0] = proj[0] || 0;
+        v2[1] = proj[1] || 0;
+        points2.push(v2);
       }
     }
 
     if (!points.length) throw new Error('Nenhum frame de fala com features no Train Pool. Execute Analyze nas gravações.');
 
     const n = points.length;
-    const Xflat = new Float32Array(n * kDims);
+    const Xflat = new Float32Array(n * points[0].length);
+    const X2flat = new Float32Array(n * 2);
+    const dim = points[0].length;
     for (let i=0;i<n;i++){
-      const off = i*kDims;
+      const off = i*dim;
       const p = points[i];
-      for (let d=0; d<kDims; d++) Xflat[off+d] = p[d];
+      for (let d=0; d<dim; d++) Xflat[off+d] = p[d];
+      X2flat[i*2+0] = points2[i][0];
+      X2flat[i*2+1] = points2[i][1];
     }
-    return { Xflat, nRows: n, dim: kDims };
+    return { Xflat, nRows: n, dim, X2flat };
   }
 
   function ensureKModelShape(model) {
     if (!model) return model;
     if (!model.predict) {
-      // adiciona método predict para compatibilidade com overlay
       model.predict = function(x) {
         let best=0, bestD=Infinity;
         for (let c=0;c<this.k;c++){
@@ -166,15 +175,13 @@
     const xspan = Math.max(1e-9, xmax - xmin);
     const yspan = Math.max(1e-9, ymax - ymin);
 
-    // eixos
     const x0 = pad, x1 = w - pad, y0 = h - pad, y1 = pad;
     ctx.strokeStyle = '#999';
     ctx.beginPath();
-    ctx.moveTo(x0,y0); ctx.lineTo(x1,y0); // eixo x
-    ctx.moveTo(x0,y0); ctx.lineTo(x0,y1); // eixo y
+    ctx.moveTo(x0,y0); ctx.lineTo(x1,y0);
+    ctx.moveTo(x0,y0); ctx.lineTo(x0,y1);
     ctx.stroke();
 
-    // série
     ctx.strokeStyle = color;
     ctx.beginPath();
     for (let i=0;i<xs.length;i++){
@@ -184,7 +191,6 @@
     }
     ctx.stroke();
 
-    // pontos
     ctx.fillStyle = color;
     for (let i=0;i<xs.length;i++){
       const px = x0 + ( (xs[i]-xmin)/xspan ) * (x1-x0);
@@ -212,7 +218,7 @@
       <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
         <strong>Auto K (KMeans)</strong>
         <label>Kmin <input id="ak-kmin" type="number" value="2" min="2" style="width:60px"/></label>
-        <label>Kmax <input id="ak-kmax" type="number" value="8" min="2" style="width:60px"/></label>
+        <label>Kmax <input id="ak-kmax" type="number" value="8" min="3" style="width:60px"/></label>
         <label>nInit <input id="ak-ninit" type="number" value="5" min="1" style="width:60px"/></label>
         <button id="ak-run" class="small">Executar</button>
         <span id="ak-status" style="color:#666"></span>
@@ -223,7 +229,6 @@
       </div>
       <div id="ak-results" style="margin-top:8px;"></div>
     `;
-    // inserir no final do trainPanel
     trainPanel.appendChild(panel);
     return panel;
   }
@@ -239,15 +244,22 @@
     const resDiv = panel.querySelector('#ak-results');
 
     const Kmin = Math.max(2, parseInt(kminEl.value || '2',10));
-    const Kmax = Math.max(Kmin, parseInt(kmaxEl.value || '8',10));
+    let Kmax = Math.max(Kmin, parseInt(kmaxEl.value || '8',10));
     const nInit = Math.max(1, parseInt(ninitEl.value || '5',10));
+
+    if (Kmax <= Kmin) {
+      Kmax = Kmin + 1;
+      kmaxEl.value = Kmax;
+    }
 
     if (!window._pcaModel) { alert('PCA ativo ausente. Rode/Selecione um treinamento.'); return; }
 
     let dataset;
     try {
       statusEl.textContent = 'Coletando e projetando dados...';
-      dataset = buildProjectedDatasetFromTrainPool(5000, Math.min(window._pcaModel.k || 2, 2));
+      // Para clustering: usar mais componentes (até 8) para evitar simplificação excessiva
+      const clusterDim = Math.min(Math.max(4, (window._pcaModel.k || 8)), 8);
+      dataset = buildProjectedDatasetFromTrainPool(5000, clusterDim);
     } catch (e) {
       console.error(e);
       alert('Falha ao coletar/projetar dados: ' + (e && e.message ? e.message : e));
@@ -262,12 +274,10 @@
       });
       statusEl.textContent = 'Concluído. Selecione um K abaixo.';
 
-      // plots
       const xs = results.map(r=>r.K);
       drawMiniPlot(plotInertia, xs, results.map(r=>r.inertia), '#1f77b4', 'Inertia (SSE) vs K');
       drawMiniPlot(plotSil, xs, results.map(r=>r.silhouette), '#d62728', 'Silhouette médio vs K');
 
-      // lista
       resDiv.innerHTML = '';
       const table = document.createElement('table');
       table.style.width = '100%';
@@ -308,7 +318,6 @@
   }
 
   function applySelectedK(result, dim) {
-    // cria modelo KMeans compatível com fluxo (overlay, visualizador)
     const model = {
       k: result.K,
       dim,
@@ -321,7 +330,6 @@
     ensureKModelShape(model);
     window._kmeansModel = model;
 
-    // notificar UI
     document.dispatchEvent(new CustomEvent('training-changed', {
       detail: { activeId: (window.modelStore && window.modelStore.getActiveTrainingId && window.modelStore.getActiveTrainingId()) || null,
         meta: { k: model.k, autoK: true } }
@@ -339,7 +347,6 @@
     }
   }
 
-  // Inicializa quando DOM pronto
   if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', ensurePanelAndBind);
   } else {

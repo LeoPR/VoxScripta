@@ -1,153 +1,49 @@
-# VoxScripta
+# VoxScripta — Resumo das alterações recentes (Auto‑K, PCA/KMeans e overlay)
 
-VoxScripta é um projeto acadêmico simples de captura de áudio, visualização (waveform + espectrograma) e organização em sessões, feito com HTML + JavaScript puro (sem frameworks pesados).
+Este README resume as mudanças feitas no projeto para suportar busca automática de K no KMeans, integração com o PCA ativo, melhorias na visualização do overlay e configurações ajustáveis.
 
-Principais recursos:
-- Gravação via MediaRecorder
-- Processamento básico (AGC, fade-in curto)
-- Visualização de waveform e espectrograma (Mel) via Web Worker
-- Trim de silêncio inicial (configurável via config.js)
-- Persistência local em IndexedDB (gravações e sessões por referência)
-- Importação e exportação de sessões (JSON)
-- Backup geral (exporta/importa todas as gravações e sessões)
-- Importação de arquivos de áudio avulsos
+O que foi adicionado
+- kmeans-evaluator.js
+  - Executa KMeans para um intervalo Kmin..Kmax com inicialização kmeans++ e múltiplas reinicializações (n_init).
+  - Calcula métricas: inertia (SSE), silhouette (amostrado), Calinski‑Harabasz (CH) e Davies‑Bouldin (DB).
+  - API: `window.kmeansEvaluator.runRange(Xflat, nRows, dim, options)` → Promise<results>.
 
----
+- kmeans-auto-ui.js
+  - Painel "Auto K (KMeans)" adicionado ao Train Pool (UI).
+  - Coleta features projetadas pelo PCA do Train Pool (frames de fala), executa avaliação por K, plota Inertia × K e Silhouette × K e lista resultados.
+  - Permite "Selecionar" um K: aplica o modelo (cria `window._kmeansModel`) e dispara `training-changed`.
+  - Usa mais componentes do PCA (até 8) para clustering — evita reduzir para 2 dimensões antes de clusterizar.
 
-## Como usar (demonstração rápida)
+- spectrogram-cluster-overlay.js
+  - Overlay de clusters (barras no rodapé) — já ajustado para desenhar no rodapé, usar configuração de `window.appConfig.clusterOverlay` (barHeight/barAlpha/drawBaseLine) e paleta de alto contraste.
+  - Botões foram movidos para fora do wrapper para não cobrir o espectrograma.
 
-- Clique no botão ● para gravar.
-- Clique ■ para parar e a gravação aparece na lista (painel esquerdo).
-- Selecione uma gravação para reproduzir e visualizar waveform + espectrograma.
-- Para aplicar trim de silêncio inicial, selecione a gravação e clique em ✂️; confirme para criar uma nova gravação trimada.
-- Clique “Salvar sessão” para gravar o conjunto atual de gravações como uma sessão (IndexedDB).
-- Exporte/importe sessões (JSON) e faça backup geral (gravações + sessões).
-
----
-
-## Arquitetura (arquivos principais)
-
-- index.html
-  - Estrutura da página e botões (gravação, navegação, salvar/exportar/importar sessão, importar áudio, backup geral).
-- style.css
-  - Estilos do layout, painel lateral e componentes (sem estilos inline; melhorias de acessibilidade).
 - config.js
-  - Fonte única de configurações (AGC, espectrograma, waveform, trim, gravação, UI, telemetria).
-  - Função getMergedProcessingOptions() para mesclar com window.processingOptions (compatibilidade).
-- audio.js
-  - Utilitários de áudio (AGC, fade-in, encoder WAV unificado) e criação do worker (ensureWorker).
-  - processAndPlayBlob: decodifica, aplica AGC/fade-in e envia para o worker gerar o espectrograma.
-- spectrogram.worker.js
-  - Worker com FFT e pipeline para gerar espectrograma em escala Mel e retornar os pixels prontos ao UI.
-- waveform.js
-  - Desenho da waveform (estático e ao vivo).
-  - Trim de silêncio inicial: análise + recorte usando encodeWAV de audio.js.
-  - Agora utiliza as configurações centralizadas em config.js (appConfig.trim).
-- recorder.js
-  - Controla a gravação, reprodução, e mantém o “workspace” de gravações em memória.
-  - Delegação para waveform.js (desenho live/estático) e integração com o worker (mensagens tratadas aqui).
-  - Persistência de gravações (IndexedDB) e ações da lista.
-- sessions.js
-  - Lista, salva, exporta e importa sessões.
-  - Backup geral (exporta/importa todas as gravações e sessões).
-- db.js
-  - IndexedDB v2: stores recordings (blobs) e sessions (referenciam gravações por ID).
-  - Migração em runtime do schema antigo (sessões com blobs embutidos).
+  - Nova seção `window.appConfig.clusterOverlay` com `barHeight`, `barAlpha`, `clusterPalette`, `drawBaseLine`.
+  - Colormap do espectrograma alterado para `magma` para reduzir conflito com paleta de clusters.
 
-Arquivos legados (podem ser removidos se não usados):
-- spectrogram.js (espectrograma síncrono, sem worker)
-- history.js (UI de histórico antiga)
+Como usar (fluxo)
+1. Abra gravações e clique em "Analisar (features)" para gerar `rec.__featuresCache`.
+2. Monte o Train Pool com gravações representativas.
+3. Rode PCA incremental e selecione/ative o PCA salvo (deve gerar `window._pcaModel`).
+4. Abra o painel "Train Pool" → "Auto K (KMeans)":
+   - Ajuste Kmin/Kmax/nInit, clique em Executar.
+   - Analise os gráficos (Inertia e Silhouette) e a tabela de resultados.
+   - Clique em "Selecionar" no K desejado para aplicar o `window._kmeansModel`.
+5. Abra o overlay do espectrograma e clique/visualize os clusters.
 
----
+Notas de calibração (recomendadas)
+- Para detectar diferenças finas (ex.: “oi” vs subunidades “o” e “i”):
+  - Use mais componentes do PCA (4–8) para clustering (o código já usa até 8).
+  - Aumente resolução temporal (hopSize menor) ou inclua contexto temporal (concatenar frames) se necessário.
+  - Ajuste segmentação de fala (`appConfig.analyzer`) para não eliminar pequenos fragmentos.
+- Métrica recomendada para escolher K: use a silhouette média (valores mais altos indicam clusters mais coerentes). Compare com inertia (elbow) como verificação.
 
-## Configurações (config.js)
-
-As principais opções ficam em `window.appConfig` e podem ser mescladas por `getMergedProcessingOptions()` com `window.processingOptions` (para compatibilidade).
-
-- AGC (`appConfig.agc`)
-  - targetRMS, maxGain, limiterThreshold, fadeMs
-
-- Espectrograma (`appConfig.spectrogram`)
-  - fftSize, hopSize, nMels, windowType, colormap, logScale, dynamicRange, fmin, fmax
-  - preserveNativeResolution, outputScale
-
-- Waveform (`appConfig.waveform`)
-  - visualHeight, samplesPerPixel, imageSmoothing
-
-- Trim de silêncio (`appConfig.trim`) [NOVO, centralizado]
-  - threshold: limiar RMS por chunk (padrão 0.01)
-  - chunkSizeMs: duração do chunk (padrão 10 ms)
-  - minNonSilenceMs: quantidade mínima de “som contínuo” após o silêncio para confirmar início da voz (padrão 50 ms)
-  - safetyPaddingMs: “sobrinha” de silêncio mantida antes do primeiro som para não cortar o ataque (padrão 10 ms)
-
-Exemplo (no DevTools, antes de gravar/trimar):
-```js
-window.processingOptions = window.processingOptions || {};
-window.processingOptions.trim = Object.assign({}, window.processingOptions.trim, {
-  threshold: 0.008,
-  chunkSizeMs: 10,
-  minNonSilenceMs: 60,
-  safetyPaddingMs: 15
-});
-```
+Próximos passos (sugestões, após testes)
+- Mover a execução do Auto‑K para WebWorker para grandes datasets.
+- Implementar opção de concatenar contexto temporal (delta frames) antes do PCA.
+- Persistência: salvar snapshot do K selecionado no model-store.
 
 ---
 
-## Qualidade do espectrograma
-
-Se a imagem parecer “pixelada”:
-- Aumente `nMels` (ex.: 128) para mais resolução vertical.
-- Use `preserveNativeResolution: true` para 1 coluna por frame.
-- `outputScale: 2` para supersampling no worker e downscale suave no UI.
-- Ajuste `imageSmoothingEnabled` (UI) conforme preferência.
-
-Cuidado: valores altos aumentam custo de CPU/memória.
-
----
-
-## Sobre o Trim de silêncio
-
-- A análise percorre o áudio em chunks (`chunkSizeMs`) medindo RMS e considera silêncio quando ≤ `threshold`.
-- Quando encontra um chunk acima do limiar e confirma os próximos `minNonSilenceMs` (como “voz contínua”), marca o fim do silêncio no início desse chunk (aplicando `safetyPaddingMs` para não cortar o ataque).
-- Correção aplicada: para silêncios longos, a marcação do fim do silêncio agora é feita no início do primeiro trecho não-silencioso confirmado, evitando falhas em que o recorte não acontecia.
-
-Se o trim parecer conservador ou agressivo:
-- Ajuste `threshold` (mais baixo = mais sensível; mais alto = considera mais coisas como som).
-- Ajuste `minNonSilenceMs` (aumente para evitar “sparks”; reduza para acelerar início).
-- Ajuste `safetyPaddingMs` (aumente para preservar mais do início do som).
-
----
-
-## Como rodar localmente
-
-Sirva via HTTP (permite microfone):
-- Node:
-  ```bash
-  npx http-server -p 8080
-  # ou
-  npx serve .
-  ```
-- Python:
-  ```bash
-  python -m http.server 8080
-  ```
-
-Abra http://localhost:8080/ (Chrome/Edge recentes).
-
-Permissões:
-- Aceite o uso do microfone quando solicitado.
-
----
-
-## Solução de problemas
-
-- Espectrograma vazio: verifique se `spectrogram.worker.js` carrega (audio.js tenta primeiro o arquivo, depois fallback inline).
-- Nada no IndexedDB: confira permissões e ordem de scripts (db.js antes de recorder.js/sessions.js).
-- Acessibilidade: removidos estilos inline e corrigidos atributos ARIA; listas com role adequado.
-- Erro intermitente “message channel closed”: normalmente causado por extensões do navegador; mitigação futura opcional.
-
----
-
-## Licença
-
-Uso acadêmico/didático. Ajuste conforme a necessidade do seu projeto.
+Se preferir, eu adapto os defaults (por exemplo Kmax=12, ou dimCluster=10) — me diga e eu atualizo os arquivos mínimos que entreguei.  

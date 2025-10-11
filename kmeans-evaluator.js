@@ -3,7 +3,6 @@
 // Calcula métricas: inertia (SSE), silhouette (amostrado), Calinski-Harabasz (CH) e Davies-Bouldin (DB).
 // API: window.kmeansEvaluator.runRange(Xflat, nRows, dim, options)
 // options: { Kmin=2, Kmax=8, nInit=5, maxIter=200, tol=1e-4, silhouetteSample=1500, randomSeed=null }
-//
 // Retorno: Promise<array de resultados ordenados por K> onde cada item:
 // { K, inertia, silhouette, ch, db, centroids: Float32Array(K*dim), sizes: Int32Array(K) }
 
@@ -11,7 +10,6 @@
   'use strict';
 
   function rng(seed) {
-    // Linear Congruential Generator simples para determinismo opcional
     let s = seed != null ? (seed>>>0) : Math.floor(Math.random()*0xFFFFFFFF);
     return function() {
       s = (1664525 * s + 1013904223) >>> 0;
@@ -33,7 +31,6 @@
   }
 
   function chooseWeightedIndex(weights, rand) {
-    // weights: Float64Array
     const total = weights.reduce((p,c)=>p+c,0);
     if (total <= 0) return Math.floor(rand()*weights.length);
     const r = rand()*total;
@@ -46,30 +43,37 @@
   }
 
   function kmeansPlusPlusInit(X, n, dim, k, rand) {
-    // retorna centroids Float32Array(k*dim) escolhidos por D^2
     const centroids = new Float32Array(k*dim);
-    // escolher primeira aleatória
     let idx0 = Math.floor(rand()*n);
     for (let d=0; d<dim; d++) centroids[d] = X[idx0*dim + d];
 
     const distSq = new Float64Array(n);
-    for (let i=0;i<n;i++) {
-      distSq[i] = sqrDist(X, i*dim, centroids, 0, dim);
-    }
+    for (let i=0;i<n;i++) distSq[i] = sqrDist(X, i*dim, centroids, 0, dim);
     let chosen = 1;
 
     while (chosen < k) {
-      const weights = distSq.slice(); // cópia
+      const weights = distSq.slice();
       const nextIdx = chooseWeightedIndex(weights, rand);
       const cOff = chosen*dim;
       for (let d=0; d<dim; d++) centroids[cOff+d] = X[nextIdx*dim + d];
 
-      // atualizar distSq (distância mínima a qualquer centro escolhido)
       for (let i=0;i<n;i++) {
         const d2 = sqrDist(X, i*dim, centroids, cOff, dim);
         if (d2 < distSq[i]) distSq[i] = d2;
       }
       chosen++;
+    }
+    return centroids;
+  }
+
+  function randomInitFromData(X, n, dim, k, rand) {
+    const centroids = new Float32Array(k*dim);
+    const used = new Set();
+    for (let c=0;c<k;c++) {
+      let idx = Math.floor(rand()*n);
+      while (used.has(idx)) idx = Math.floor(rand()*n);
+      used.add(idx);
+      for (let d=0; d<dim; d++) centroids[c*dim + d] = X[idx*dim + d];
     }
     return centroids;
   }
@@ -88,7 +92,6 @@
 
     let prevShift = Infinity;
     for (let iter=0; iter<maxIter; iter++) {
-      // assign
       for (let i=0;i<n;i++) {
         let bestC = 0;
         let bestD = Infinity;
@@ -101,26 +104,20 @@
         assignments[i] = bestC;
       }
 
-      // reset accumulators
       sums.fill(0);
       counts.fill(0);
 
-      // accumulate
       for (let i=0;i<n;i++) {
         const c = assignments[i];
         counts[c]++;
         const xOff = i*dim, cOff = c*dim;
-        for (let d=0; d<dim; d++) {
-          sums[cOff + d] += X[xOff + d];
-        }
+        for (let d=0; d<dim; d++) sums[cOff + d] += X[xOff + d];
       }
 
-      // update centroids, compute shift
       let shift = 0;
       for (let c=0;c<k;c++) {
         const cOff = c*dim;
         if (counts[c] === 0) {
-          // re-inicializa a um ponto aleatório
           const ri = Math.floor(rand()*n);
           for (let d=0; d<dim; d++) {
             const old = centroids[cOff+d];
@@ -142,7 +139,6 @@
       prevShift = shift;
     }
 
-    // inertia
     let inertia = 0;
     for (let i=0;i<n;i++) {
       const c = assignments[i];
@@ -155,18 +151,6 @@
       inertia,
       counts
     };
-  }
-
-  function randomInitFromData(X, n, dim, k, rand) {
-    const centroids = new Float32Array(k*dim);
-    const used = new Set();
-    for (let c=0;c<k;c++) {
-      let idx = Math.floor(rand()*n);
-      while (used.has(idx)) idx = Math.floor(rand()*n);
-      used.add(idx);
-      for (let d=0; d<dim; d++) centroids[c*dim + d] = X[idx*dim + d];
-    }
-    return centroids;
   }
 
   function computeGlobalMean(X, n, dim) {
@@ -182,7 +166,6 @@
   function computeCH(X, n, dim, centroids, assignments, counts) {
     const k = counts.length;
     const mean = computeGlobalMean(X, n, dim);
-    // between-cluster dispersion
     let B = 0;
     for (let c=0;c<k;c++) {
       const cOff = c*dim;
@@ -195,7 +178,6 @@
       }
       B += w * d2;
     }
-    // within-cluster dispersion
     let W = 0;
     for (let i=0;i<n;i++) {
       const c = assignments[i];
@@ -206,49 +188,10 @@
     return ch;
   }
 
-  function computeDB(X, n, dim, centroids, assignments, counts, sampleLimit=2000, rand=Math.random) {
-    const k = counts.length;
-    // Si: média das distâncias dos pontos do cluster i ao centróide i
-    const Si = new Float64Array(k).fill(0);
-    const denom = new Int32Array(k).fill(0);
-
-    // amostrar pontos para acelerar
-    const idxs = sampleIndices(n, sampleLimit, rand);
-    for (const i of idxs) {
-      const c = assignments[i];
-      const cOff = c*dim;
-      const dist = euDist(X, i*dim, centroids, cOff, dim);
-      Si[c] += dist;
-      denom[c] += 1;
-    }
-    for (let c=0;c<k;c++) {
-      Si[c] = denom[c] ? (Si[c]/denom[c]) : 0;
-    }
-
-    // Rij = (Si + Sj)/dist(centroid_i, centroid_j)
-    const RijMax = new Float64Array(k).fill(0);
-    for (let i=0;i<k;i++){
-      for (let j=0;j<k;j++){
-        if (i===j) continue;
-        const dij = euDist(centroids, i*dim, centroids, j*dim, dim);
-        if (dij === 0) continue;
-        const Rij = (Si[i] + Si[j]) / dij;
-        if (Rij > RijMax[i]) RijMax[i] = Rij;
-      }
-    }
-    // DB é média de max_j Rij
-    let sum=0, valid=0;
-    for (let i=0;i<k;i++){
-      if (isFinite(RijMax[i])) { sum += RijMax[i]; valid++; }
-    }
-    return valid ? (sum/valid) : Infinity;
-  }
-
   function sampleIndices(n, limit, rand=Math.random) {
     if (!limit || limit >= n) {
       const a = new Array(n); for (let i=0;i<n;i++) a[i]=i; return a;
     }
-    // Reservatório simples
     const res = new Array(limit);
     let i=0;
     for (; i<limit; i++) res[i]=i;
@@ -259,19 +202,46 @@
     return res;
   }
 
-  function computeSilhouette(X, n, dim, assignments, k, sampleLimit=1500, rand=Math.random) {
-    // Silhouette médio aproximado por amostragem (se n grande)
+  function computeDB(X, n, dim, centroids, assignments, counts, sampleLimit=2000, rand=Math.random) {
+    const k = counts.length;
+    const Si = new Float64Array(k).fill(0);
+    const denom = new Int32Array(k).fill(0);
     const idxs = sampleIndices(n, sampleLimit, rand);
-    // Precomputar por cluster: lista de índices amostrados por cluster
+    for (const i of idxs) {
+      const c = assignments[i];
+      const cOff = c*dim;
+      const dist = euDist(X, i*dim, centroids, cOff, dim);
+      Si[c] += dist;
+      denom[c] += 1;
+    }
+    for (let c=0;c<k;c++) Si[c] = denom[c] ? (Si[c]/denom[c]) : 0;
+
+    const RijMax = new Float64Array(k).fill(0);
+    for (let i=0;i<k;i++){
+      for (let j=0;j<k;j++){
+        if (i===j) continue;
+        const dij = euDist(centroids, i*dim, centroids, j*dim, dim);
+        if (dij === 0) continue;
+        const Rij = (Si[i] + Si[j]) / dij;
+        if (Rij > RijMax[i]) RijMax[i] = Rij;
+      }
+    }
+    let sum=0, valid=0;
+    for (let i=0;i<k;i++){
+      if (isFinite(RijMax[i])) { sum += RijMax[i]; valid++; }
+    }
+    return valid ? (sum/valid) : Infinity;
+  }
+
+  function computeSilhouette(X, n, dim, assignments, k, sampleLimit=1500, rand=Math.random) {
+    const idxs = sampleIndices(n, sampleLimit, rand);
     const byCluster = Array.from({length:k}, ()=>[]);
     for (const i of idxs) byCluster[assignments[i]].push(i);
 
-    // Para cada amostrado: a(i) média dist intra-cluster; b(i) menor média dist para outro cluster
     let sumS = 0, countS = 0;
     for (const i of idxs) {
       const ci = assignments[i];
       const same = byCluster[ci];
-      // a(i)
       let a=0, na=0;
       for (const j of same) {
         if (j === i) continue;
@@ -280,7 +250,6 @@
       }
       a = na ? (a/na) : 0;
 
-      // b(i)
       let b = Infinity;
       for (let c=0;c<k;c++) {
         if (c === ci) continue;
@@ -317,7 +286,6 @@
         const r = lloydKMeans(Xflat, nRows, dim, K, { maxIter, tol, rand, init:'kmeans++' });
         if (!best || r.inertia < best.inertia) best = r;
       }
-      // métricas
       const silhouette = computeSilhouette(Xflat, nRows, dim, best.assignments, K, silhouetteSample, rand);
       const ch = computeCH(Xflat, nRows, dim, best.centroids, best.assignments, best.counts);
       const db = computeDB(Xflat, nRows, dim, best.centroids, best.assignments, best.counts, Math.min(2000, nRows), rand);
@@ -332,13 +300,10 @@
         sizes: new Int32Array(best.counts)
       });
 
-      // pequeno yield para não bloquear
       await new Promise(r=>setTimeout(r,0));
     }
     return results;
   }
 
-  window.kmeansEvaluator = {
-    runRange
-  };
+  window.kmeansEvaluator = { runRange };
 })();

@@ -43,7 +43,7 @@
         <div class="controls">
           <button id="prev-btn" class="control" title="Anterior" aria-label="Anterior">⏮</button>
           <button id="record-btn" class="control record" title="Gravar" aria-label="Gravar">●</button>
-            <button id="stop-btn" class="control" disabled title="Parar" aria-label="Parar">■</button>
+          <button id="stop-btn" class="control" disabled title="Parar" aria-label="Parar">■</button>
           <button id="next-btn" class="control" title="Próxima" aria-label="Próxima">⏭</button>
           <button id="trim-audio-btn" class="small icon-btn" title="Trim silêncio" aria-label="Trim silêncio">✂️</button>
           <button id="analyze-btn" class="small icon-btn" title="Analisar (features)" aria-label="Analisar gravação">🔬</button>
@@ -85,7 +85,6 @@
     </aside>
   </div>
 
-  <!-- Core app scripts (infraestrutura e UI) -->
   <script src="db.js"></script>
   <script src="config.js"></script>
   <script src="audio.js"></script>
@@ -93,7 +92,6 @@
   <script src="recorder.js"></script>
   <script src="sessions.js"></script>
 
-  <!-- Analyzer / feature extraction and UI helpers -->
   <script src="analyzer.js"></script>
   <script src="ui-analyzer.js"></script>
   <script src="overlay-analyzer.js"></script>
@@ -112,16 +110,15 @@
   <script src="kmeans-incremental.js"></script>
   <script src="kmeans-ui.js"></script>
 
+  <!-- Auto K (KMeans) - novos arquivos -->
+  <script src="kmeans-evaluator.js"></script>
+  <script src="kmeans-auto-ui.js"></script>
+
   <!-- Etapa A: gerenciamento de treinamentos (persistência e UI) -->
   <script src="model-store.js"></script>
   <script src="pca-model-manager-ui.js"></script>
 
-  <!-- Place for future Etapa B (spectrogram overlay) if/when you approve -->
+  <!-- Overlay de clusters no espectrograma -->
   <script src="spectrogram-cluster-overlay.js"></script>
-
-    <script src="kmeans-evaluator.js"></script>
-    <script src="kmeans-auto-ui.js"></script>
-
-
 </body>
 </html>
