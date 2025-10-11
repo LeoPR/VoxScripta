@@ -1,9 +1,10 @@
 // pca-visualizer.js
 // Visualizador de projeções PC1 x PC2 com cache por assinatura do modelo PCA.
 // Ajustes:
-// - Ao encontrar window._kmeansModel, colore pontos por cluster (usando as 2 primeiras dimensões dos centróides).
-// - Export CSV inclui campo 'cluster' quando disponível.
-// - Legenda mostra clusters (quando houver) e depois gravações (como antes).
+// - Usa por padrão gravações do Train Pool (fallback: workspace se Train Pool vazio).
+// - Se existir window._kmeansModel, colore os pontos por cluster (PC1×PC2).
+// - Export CSV inclui coluna 'cluster' quando houver K-Means.
+// - Legenda mostra clusters (KMeans) e depois gravações.
 // - Invalida cache quando window._pcaModel.__updatedAt muda.
 
 (function(){
@@ -22,11 +23,8 @@
     return { pca:{}, analyzer:{} };
   }
 
-  // Normalização igual ao treino do PCA incremental
   function normalizeFeatureVector(vec, nMels, sampleRate){
-    for (let m = 0; m < nMels; m++) {
-      vec[m] = Math.log1p(Number.isFinite(vec[m]) ? vec[m] : 0);
-    }
+    for (let m = 0; m < nMels; m++) vec[m] = Math.log1p(Number.isFinite(vec[m]) ? vec[m] : 0);
     if (!sampleRate) sampleRate = 16000;
     const centroidIdx = nMels+1;
     vec[centroidIdx] = Number.isFinite(vec[centroidIdx]) ? (vec[centroidIdx] / (sampleRate/2)) : 0;
@@ -50,7 +48,6 @@
     return (window.segmentSilence || (window.analyzerOverlay && window.analyzerOverlay.segmentSilence));
   }
 
-  // Gera assinatura do modelo PCA para identificar mudanças
   function modelSignature(model) {
     if (!model || !model.components) return 'no-model';
     let h = 5381;
@@ -58,21 +55,44 @@
     const mean = model.mean || new Float32Array(model.d || 0);
     h = ((h << 5) + h) ^ (model.d || 0);
     h = ((h << 5) + h) ^ (model.k || 0);
-    if (model.__updatedAt) {
-      h = ((h << 5) + h) ^ (model.__updatedAt & 0xffffffff);
-    }
+    if (model.__updatedAt) h = ((h << 5) + h) ^ (model.__updatedAt & 0xffffffff);
     const step = Math.max(1, Math.floor(comps.length / 1000));
     for (let i = 0; i < comps.length; i += step) {
       const v = Math.round((comps[i] || 0) * 1e6);
       h = ((h << 5) + h) ^ (v & 0xFFFFFFFF);
-      const mi = mean[i % mean.length] || 0;
+      const mi = mean[i % (mean.length || 1)] || 0;
       const mv = Math.round(mi * 1e6);
       h = ((h << 5) + h) ^ (mv & 0xFFFFFFFF);
     }
     return 'm' + (h >>> 0).toString(16);
   }
 
-  // Calcula projeções PC1×PC2 (mesmo código que já existia)
+  function getSelectionForVisualization() {
+    const all = (typeof window.getWorkspaceRecordings === 'function') ? (window.getWorkspaceRecordings() || []) : (window.recordings || []);
+    let ids = [];
+    try {
+      if (window.uiAnalyzer && typeof window.uiAnalyzer.getTrainPool === 'function') {
+        ids = window.uiAnalyzer.getTrainPool() || [];
+      }
+    } catch (_) { ids = []; }
+
+    if (Array.isArray(ids) && ids.length) {
+      const selected = ids.map(id => all.find(r => r && String(r.id) === String(id))).filter(Boolean);
+      if (selected.length) {
+        return {
+          recs: selected,
+          label: `Train Pool (${selected.length} gravação(ões))`,
+          signature: 'train:' + ids.map(String).join(',')
+        };
+      }
+    }
+    return {
+      recs: all,
+      label: `Workspace (todas) (${all.length} gravação(ões))`,
+      signature: 'workspace:all'
+    };
+  }
+
   async function computeProjectionsPC12(recsToUse) {
     if (!window._pcaModel) throw new Error('Modelo PCA não encontrado. Execute o PCA primeiro.');
     const model = window._pcaModel;
@@ -83,7 +103,7 @@
     const minSilenceFrames = pcaCfg.minSilenceFrames || 5;
     const minSpeechFrames = pcaCfg.minSpeechFrames || 3;
 
-    const recs = Array.isArray(recsToUse) ? recsToUse : (typeof window.getWorkspaceRecordings === 'function' ? window.getWorkspaceRecordings() : (window.recordings || []));
+    const recs = Array.isArray(recsToUse) ? recsToUse : [];
     if (!recs || !recs.length) throw new Error('Sem gravações para visualizar.');
 
     const loaded = [];
@@ -142,19 +162,12 @@
         const base = f*dims;
         let vec = new Float32Array(flat.subarray(base, base + dims));
         vec = normalizeFeatureVector(vec, nMels, sampleRate);
-
         const proj = model.project(vec);
         const x = proj[0] || 0;
         const y = proj[1] || 0;
 
         const t = (fr.timestamps && fr.timestamps[f] !== undefined) ? fr.timestamps[f] : f;
-        allPoints.push({
-          x, y,
-          recId: rec.id,
-          recName: rec.name || String(rec.id),
-          frame: f,
-          timeSec: t
-        });
+        allPoints.push({ x, y, recId: rec.id, recName: rec.name || String(rec.id), frame: f, timeSec: t });
       }
       perRecCounts.set(rec.id, (perRecCounts.get(rec.id) || 0) + speechIdxs.length);
     }
@@ -162,7 +175,6 @@
     return { points: allPoints, perRecCounts };
   }
 
-  // Desenha scatter PC1×PC2
   function drawScatter(canvas, points, colorForPoint, bbox) {
     const ctx = canvas.getContext('2d');
     const w = canvas.width, h = canvas.height;
@@ -188,7 +200,6 @@
     function sx(x){ return plotL + ((x - minX) / (maxX - minX)) * plotW; }
     function sy(y){ return plotB - ((y - minY) / (maxY - minY)) * plotH; }
 
-    // Eixos
     ctx.strokeStyle = '#555';
     ctx.lineWidth = 1;
     ctx.beginPath(); ctx.moveTo(plotL, plotB); ctx.lineTo(plotR, plotB); ctx.stroke();
@@ -206,12 +217,13 @@
       ctx.fillText(ty.toFixed(1), plotL-40, py+4);
     }
 
-    for (const p of points) {
+    for (let i=0;i<points.length;i++) {
+      const p = points[i];
       const cx = sx(p.x);
       const cy = sy(p.y);
       ctx.beginPath();
       ctx.arc(cx, cy, 2.6, 0, Math.PI*2);
-      ctx.fillStyle = colorForPoint(p);
+      ctx.fillStyle = colorForPoint(p, i);
       ctx.fill();
     }
 
@@ -234,7 +246,7 @@
     ];
   }
 
-  function buildLegend(container, recsOrder, colorForRec, countsMap, sourceInfo, kmeansInfo) {
+  function buildLegend(container, recsOrder, colorForRec, countsMap, sourceInfo, kmeansInfo){
     container.innerHTML = '';
     const title = document.createElement('div');
     title.style.fontSize = '12px';
@@ -243,7 +255,6 @@
     title.textContent = sourceInfo || '';
     container.appendChild(title);
 
-    // Se houver KMeans, mostrar clusters primeiro
     if (kmeansInfo && kmeansInfo.k && Array.isArray(kmeansInfo.sizes)) {
       const h = document.createElement('div');
       h.style.marginBottom = '6px';
@@ -275,7 +286,6 @@
       container.appendChild(ulc);
     }
 
-    // Legenda de gravações (como antes)
     if (recsOrder && recsOrder.length) {
       const ul = document.createElement('ul');
       ul.style.listStyle = 'none';
@@ -367,7 +377,7 @@
 
   let _lastPoints = null;
   let _lastRecsOrder = null;
-  let _lastKMeansAssignments = null; // parallel to _lastPoints: cluster index or null
+  let _lastKMeansAssignments = null;
 
   function exportCSVFromLast(){
     if (!_lastPoints || !_lastPoints.length) {
@@ -390,7 +400,6 @@
     setTimeout(()=>URL.revokeObjectURL(url), 5000);
   }
 
-  // Cache global (persistirá enquanto a página estiver aberta)
   window._pcaVisualizerCache = window._pcaVisualizerCache || {};
 
   async function openVisualizer(){
@@ -400,7 +409,6 @@
         return;
       }
 
-      // Invalidação automática de cache quando o modelo muda (via __updatedAt)
       const updatedAt = window._pcaModel.__updatedAt || 0;
       if (window._pcaVisualizerCache._lastModelUpdatedAt !== undefined &&
           window._pcaVisualizerCache._lastModelUpdatedAt !== updatedAt) {
@@ -408,13 +416,7 @@
       }
       window._pcaVisualizerCache._lastModelUpdatedAt = updatedAt;
 
-      // Seleção: prioriza Train Pool
-      const trainIds = (window.uiAnalyzer && typeof window.uiAnalyzer.getTrainPool === 'function') ? window.uiAnalyzer.getTrainPool() : [];
-      const recsAll = (typeof window.getWorkspaceRecordings === 'function') ? window.getWorkspaceRecordings() : (window.recordings || []);
-      const selection = (Array.isArray(trainIds) && trainIds.length)
-        ? { recs: trainIds.map(id => recsAll.find(r => r && String(r.id) === String(id))).filter(Boolean), label: `Train Pool (${trainIds.length} gravação(ões))`, signature: 'train:' + trainIds.join(',') }
-        : { recs: recsAll, label: `Workspace (todas) (${(recsAll || []).length} gravação(ões))`, signature: 'workspace:all' };
-
+      const selection = getSelectionForVisualization();
       const signature = modelSignature(window._pcaModel) + '|' + selection.signature;
       let cached = window._pcaVisualizerCache[signature];
 
@@ -435,66 +437,20 @@
           points,
           perRecCounts,
           bbox: { minX, maxX, minY, maxY },
-          recsOrder
+          recsOrder,
+          sourceInfo: selection.label
         };
         window._pcaVisualizerCache[signature] = cached;
       }
 
       const { modal, canvas, legend } = createVisModal();
 
-      // Preparar cores por gravação
       const recsOrder = cached.recsOrder || [];
       const colorForRec = (id) => {
         const idx = recsOrder.findIndex(rr => String(rr.id) === String(id));
         return (idx>=0) ? recsOrder[idx].color : '#888';
       };
 
-      // Verificar KMeans e preparar cores por cluster se houver
-      const kmodel = window._kmeansModel;
-      let useClusters = false;
-      let clusterColors = [];
-      let kinfo = null;
-      let assignments = null;
-      if (kmodel && kmodel.k && kmodel.centroids) {
-        useClusters = true;
-        const k = kmodel.k;
-        // escolher cores para clusters (reusar palette circulando)
-        const pal = colorPalette();
-        for (let ci=0; ci<k; ci++) clusterColors[ci] = pal[ci % pal.length];
-
-        // calcular assignment por ponto usando apenas as 2 primeiras dimensões dos centróides
-        // (se kmeans foi treinado em mais dims, usamos aproximação pelas 2 primeiras dims)
-        const centroids = kmodel.centroids;
-        const cDim = kmodel.dim || 2;
-        const centroids2 = [];
-        for (let ci=0; ci<k; ci++){
-          const base = ci * cDim;
-          const cx = (cDim >= 1) ? (centroids[base + 0] || 0) : 0;
-          const cy = (cDim >= 2) ? (centroids[base + 1] || 0) : 0;
-          centroids2.push({ cx, cy });
-        }
-
-        assignments = new Array(cached.points.length);
-        for (let i=0;i<cached.points.length;i++){
-          const p = cached.points[i];
-          let best = 0, bestD = Infinity;
-          for (let ci=0; ci<k; ci++){
-            const d0 = p.x - centroids2[ci].cx;
-            const d1 = p.y - centroids2[ci].cy;
-            const d2 = d0*d0 + d1*d1;
-            if (d2 < bestD) { bestD = d2; best = ci; }
-          }
-          assignments[i] = best;
-        }
-
-        kinfo = {
-          k: kmodel.k,
-          inertia: (kmodel.inertia !== undefined ? kmodel.inertia : null),
-          sizes: Array.isArray(kmodel.clusterSizes) ? Array.from(kmodel.clusterSizes) : (kmodel.clusterSizes && Array.from(kmodel.clusterSizes) || [])
-        };
-      }
-
-      // Mensagem de carregamento simples
       const ctx = canvas.getContext('2d');
       ctx.clearRect(0,0,canvas.width,canvas.height);
       ctx.fillStyle = '#666';
@@ -503,18 +459,58 @@
 
       _lastPoints = cached.points;
       _lastRecsOrder = recsOrder;
-      _lastKMeansAssignments = assignments || null;
 
+      // Preparar clusters (se houver KMeans)
+      const kmodel = window._kmeansModel;
+      let kinfo = null;
+      let assignments = null;
+      let clusterColors = [];
+      if (kmodel && kmodel.k && kmodel.centroids) {
+        const k = kmodel.k;
+        const pal = colorPalette();
+        for (let ci=0; ci<k; ci++) clusterColors[ci] = pal[ci % pal.length];
+
+        const cDim = kmodel.dim || 2;
+        const centroids2 = [];
+        for (let ci=0; ci<k; ci++){
+          const base = ci * cDim;
+          const cx = (cDim >= 1) ? (kmodel.centroids[base + 0] || 0) : 0;
+          const cy = (cDim >= 2) ? (kmodel.centroids[base + 1] || 0) : 0;
+          centroids2.push({ cx, cy });
+        }
+
+        assignments = new Array(cached.points.length);
+        for (let i=0;i<cached.points.length;i++){
+          const p = cached.points[i];
+          let best = 0, bestD = Infinity;
+          for (let ci=0; ci<k; ci++){
+            const dx = p.x - centroids2[ci].cx;
+            const dy = p.y - centroids2[ci].cy;
+            const d2 = dx*dx + dy*dy;
+            if (d2 < bestD) { bestD = d2; best = ci; }
+          }
+          assignments[i] = best;
+        }
+
+        kinfo = {
+          k: kmodel.k,
+          inertia: (kmodel.inertia !== undefined ? kmodel.inertia : null),
+          sizes: Array.isArray(kmodel.clusterSizes) ? Array.from(kmodel.clusterSizes) : (kmodel.clusterSizes && Array.from(kmodel.clusterSizes) || []),
+          colors: clusterColors
+        };
+      }
+
+      _lastKMeansAssignments = assignments || null;
       const colorForPoint = (p, idx) => {
-        if (useClusters && _lastKMeansAssignments && _lastKMeansAssignments[idx] !== undefined && _lastKMeansAssignments[idx] !== null) {
+        if (_lastKMeansAssignments && _lastKMeansAssignments[idx] !== undefined && _lastKMeansAssignments[idx] !== null) {
           const ci = _lastKMeansAssignments[idx];
-          return clusterColors[ci] || '#333';
+          return (kinfo && kinfo.colors && kinfo.colors[ci]) ? kinfo.colors[ci] : '#333';
         }
         return colorForRec(p.recId);
       };
 
-      drawScatter(canvas, cached.points, (p)=> colorForPoint(p, cached.points.indexOf(p)), cached.bbox);
-      buildLegend(legend, recsOrder, colorForRec, cached.perRecCounts || new Map(), selection.label, kinfo ? Object.assign({}, kinfo, { colors: clusterColors }) : null);
+      drawScatter(canvas, cached.points, colorForPoint, cached.bbox);
+      buildLegend(legend, recsOrder, colorForRec, cached.perRecCounts || new Map(), cached.sourceInfo, kinfo);
 
     } catch (err) {
       console.error('pca-visualizer: erro ao abrir visualização:', err);
@@ -522,7 +518,6 @@
     }
   }
 
-  // Injeta botão no modal PCA
   function injectButtonIfNeeded(root){
     try {
       let modal = null;
@@ -545,12 +540,9 @@
       if (actions.firstChild) actions.insertBefore(btn, actions.firstChild);
       else actions.appendChild(btn);
       modal.__pca_vis_btn_injected = true;
-    } catch (e) {
-      // silencioso
-    }
+    } catch (e) {}
   }
 
-  // Observer para detectar criação do modal PCA
   const mo = new MutationObserver((mutations) => {
     for (const m of mutations) {
       for (const node of m.addedNodes) {
@@ -561,15 +553,9 @@
       }
     }
   });
-  try {
-    mo.observe(document.body, { childList: true, subtree: true });
-  } catch (_) {}
-
+  try { mo.observe(document.body, { childList: true, subtree: true }); } catch (_) {}
   try { injectButtonIfNeeded(document); } catch (_) {}
 
-  // Expor API pública
-  window.pcaVisualizer = {
-    open: openVisualizer
-  };
+  window.pcaVisualizer = { open: openVisualizer };
 
 })();

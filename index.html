@@ -85,25 +85,39 @@
     </aside>
   </div>
 
+  <!-- Core app scripts (infraestrutura e UI) -->
   <script src="db.js"></script>
   <script src="config.js"></script>
   <script src="audio.js"></script>
   <script src="waveform.js"></script>
   <script src="recorder.js"></script>
   <script src="sessions.js"></script>
+
+  <!-- Analyzer / feature extraction and UI helpers -->
   <script src="analyzer.js"></script>
   <script src="ui-analyzer.js"></script>
   <script src="overlay-analyzer.js"></script>
 
-  <!-- Adições: utilitários de validação/preparo e PCA batch -->
+  <!-- Feature validation / preparation and PCA batch helper -->
   <script src="feature-validator.js"></script>
   <script src="pca-data-prep.js"></script>
   <script src="pca-batch.js"></script>
 
+  <!-- PCA incremental, diagnostics and visualizer -->
   <script src="pca-incremental.js"></script>
   <script src="pca-diagnostics.js"></script>
   <script src="pca-visualizer.js"></script>
-<script src="kmeans-incremental.js"></script>
-<script src="kmeans-ui.js"></script>
+
+  <!-- KMeans incremental + UI -->
+  <script src="kmeans-incremental.js"></script>
+  <script src="kmeans-ui.js"></script>
+
+  <!-- Etapa A: gerenciamento de treinamentos (persistência e UI) -->
+  <script src="model-store.js"></script>
+  <script src="pca-model-manager-ui.js"></script>
+
+  <!-- Place for future Etapa B (spectrogram overlay) if/when you approve -->
+  <!-- <script src="spectrogram-cluster-overlay.js"></script> -->
+
 </body>
 </html>

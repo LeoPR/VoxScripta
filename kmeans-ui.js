@@ -1,9 +1,5 @@
 // kmeans-ui.js
-// Integra um botão "KMeans (incremental)" no mesmo modal do PCA e mostra um resumo textual.
-// Mantém as mudanças de UI mínimas, sem gráficos, só estatísticas e distribuição por gravação.
-//
-// Instruções: inclua <script src="kmeans-incremental.js"></script> e <script src="kmeans-ui.js"></script>
-// após pca-incremental.js e pca-data-prep.js no index.html.
+// Integra um botão "KMeans (incremental)" no modal do PCA e mostra um resumo textual.
 
 (function(){
   'use strict';
@@ -56,13 +52,12 @@
       }
       section.innerHTML = '<div>Executando K-Means incremental...</div>';
 
-      // Parâmetros padrão (leves) — ajuste aqui se quiser outra default
       const model = await window.kmeans.runIncrementalKMeansOnTrainPool({
         k: 3,
         pcaDims: 2,
         batchSize: 256,
         epochs: 3,
-        seed: null,         // defina um número (ex: 42) para reprodutibilidade total
+        seed: null,
         normalizeZ: false,
         maxPointsForPreview: 1500
       }, (prog) => {
@@ -71,7 +66,6 @@
         if (el) el.firstChild.textContent = `Executando K-Means incremental... ${pct}%`;
       });
 
-      // Construir resumo textual
       const sizes = Array.from(model.clusterSizes || []);
       const inertia = model.inertia || 0;
       const perRec = model.perRecordingClusterCounts || {};
@@ -100,7 +94,7 @@
             </ul>
           </div>` : ''}
         <div style="margin-top:8px;font-size:12px;color:#666;">
-          Modelo salvo em <code>window._kmeansModel</code>.
+          Modelo salvo em <code>window._kmeansModel</code>. Abra "Visualizar projeções" para ver os clusters coloridos.
         </div>
       `;
 
@@ -121,10 +115,7 @@
       }
     }
   });
-  try {
-    mo.observe(document.body, { childList: true, subtree: true });
-  } catch (_) {}
-
+  try { mo.observe(document.body, { childList: true, subtree: true }); } catch (_) {}
   try { injectButtonIfNeeded(document); } catch (_) {}
 
 })();
