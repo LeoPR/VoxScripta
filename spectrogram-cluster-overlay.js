@@ -6,6 +6,9 @@
 // - corrige tamanho do canvas para devicePixelRatio e usa ctx.scale(dpr,dpr)
 // - mensagens de erro/alerta mais claras
 // - mínima invasão, mantive API e controles existentes.
+// - botões movidos para fora do wrapper (para não sobrepor a visualização)
+// - MELHORIA VISUAL: barras na parte de baixo + linha preta de 1px na base
+// - Lê configurações do overlay a partir do config.js (window.appConfig.overlayClusters)
 
 (function(){
   'use strict';
@@ -17,17 +20,27 @@
     windowBefore: 2.0,
     windowAfter: 2.0,
     mode: 'bar',
-    barHeight: 14,
-    alpha: 0.45,
+    barHeight: 60,
+    alpha: 0.75,
     clusterPalette: null
   };
 
+  // Paleta padrão de alto contraste (sem azul/verde/amarelo)
   function defaultPalette() {
     return [
-      '#e41a1c','#377eb8','#4daf4a','#984ea3','#ff7f00',
-      '#ffff33','#a65628','#f781bf','#999999',
-      '#1f77b4', '#ff7f0e', '#2ca02c', '#d62728',
-      '#9467bd', '#8c564b', '#e377c2', '#7f7f7f'
+      '#e41a1c', // vermelho
+      '#ff7f00', // laranja
+      '#984ea3', // roxo
+      '#a65628', // marrom
+      '#f781bf', // rosa
+      '#999999', // cinza
+      '#d95f02', // laranja escuro
+      '#d62728', // vermelho escuro
+      '#9467bd', // roxo escuro
+      '#8c564b', // marrom escuro
+      '#e377c2', // magenta
+      '#7f7f7f', // cinza médio
+      '#000000'  // preto
     ];
   }
 
@@ -117,8 +130,15 @@
   }
 
   function makeManager(opts) {
-    const cfg = Object.assign({}, DEFAULTS, opts || {});
-    const palette = Array.isArray(cfg.clusterPalette) && cfg.clusterPalette.length ? cfg.clusterPalette : defaultPalette();
+    // NOVO: ler config do app (config.js)
+    const merged = (window.appConfig && typeof window.appConfig.getMergedProcessingOptions === 'function')
+      ? window.appConfig.getMergedProcessingOptions()
+      : {};
+    const overlayCfg = merged.overlayClusters || {};
+    const cfg = Object.assign({}, DEFAULTS, overlayCfg, opts || {});
+
+    const paletteFromCfg = cfg.clusterPalette || cfg.palette;
+    const palette = Array.isArray(paletteFromCfg) && paletteFromCfg.length ? paletteFromCfg : defaultPalette();
 
     const specCanvas = document.querySelector(cfg.spectrogramSelector);
     let overlay = document.querySelector(cfg.overlaySelector);
@@ -165,7 +185,10 @@
       controlBar.style.zIndex = 1300;
       controlBar.style.display = 'flex';
       controlBar.style.gap = '6px';
-      wrapper.appendChild(controlBar);
+      // botões fora do wrapper (após o canvas)
+      wrapper.parentNode.insertBefore(controlBar, wrapper.nextSibling);
+      controlBar.style.position = 'relative';
+      controlBar.style.marginTop = '6px';
     }
 
     function btn(label, title) {
@@ -278,9 +301,15 @@
         const color = (kmodel && kmodel.colors && kmodel.colors[cluster]) ? kmodel.colors[cluster] : (palette[cluster % palette.length] || '#888');
         ctx.fillStyle = hexToRgba(color, cfg.alpha);
         if (cfg.mode === 'fill') {
+          // modo 'fill' cobre toda a altura
           ctx.fillRect(x, 0, width, h);
         } else {
-          ctx.fillRect(x, 0, width, Math.min(cfg.barHeight, h));
+          // MODO 'bar': desenhar no rodapé com linha preta de base
+          const barH = Math.min(cfg.barHeight, h);
+          const y = h - barH;
+          ctx.fillRect(x, y, width, barH);
+          ctx.fillStyle = 'rgba(0,0,0,0.7)';
+          ctx.fillRect(x, h - 1, width, 1);
         }
       }
 
@@ -304,10 +333,10 @@
       if (!window._kmeansModel) throw new Error('KMeans não ativo (window._kmeansModel). Treine/selecionar um treino.');
 
       const flat = fr.features;
-      const dims = (fr.shape && fr.shape.dims) ? fr.shape.dims : (fr.d || fr.meta && fr.meta.dims) || null;
-      const frames = (fr.shape && fr.shape.frames) ? fr.shape.frames : (fr.frames || (flat ? Math.floor(flat.length / dims) : 0));
+      const dims = (fr.shape && fr.shape.dims) ? fr.shape.dims : (fr.d || (fr.meta && fr.meta.dims)) || null;
+      const frames = (fr.shape && fr.shape.frames) ? fr.shape.frames : (fr.frames || (flat ? Math.floor(flat.length / (dims||1)) : 0));
       const timestamps = (Array.isArray(fr.timestamps) && fr.timestamps.length) ? fr.timestamps.slice() : null;
-      const nMels = fr.meta && fr.meta.nMels ? fr.meta.nMels : Math.max(0, (dims ? dims - 3 : 0));
+      const nMels = fr.meta && fr.meta.nMels ? fr.meta.nMels : Math.max(0, ((dims||0) - 3));
       const sampleRate = (fr.meta && fr.meta.sampleRate) ? fr.meta.sampleRate : 16000;
 
       // fallback timestamps: linear over audio duration if available
@@ -318,7 +347,7 @@
         if (audDur && frames > 1) {
           for (let i=0;i<frames;i++) ts[i] = (i / (frames - 1)) * audDur;
         } else {
-          for (let i=0;i<frames;i++) ts[i] = i * 0.02; // fallback 20ms per frame
+          for (let i=0;i<frames;i++) ts[i] = i * 0.02; // fallback 20ms por frame
         }
       }
 
@@ -471,7 +500,7 @@
     });
 
     window.addEventListener('beforeunload', () => {
-      try { overlay.removeEventListener('click', onClick); } catch(e){}
+      try { overlay.removeEventListener('click', onClick); } catch(e){};
     });
 
     return {

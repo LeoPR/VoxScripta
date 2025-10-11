@@ -14,12 +14,14 @@
   };
 
   // Espectrograma (worker e visualização)
+  // Observação: troquei o colormap de 'viridis' para 'magma' para evitar tons
+  // azul/verde/amarelo que conflitam com algumas cores de cluster.
   window.appConfig.spectrogram = {
     fftSize: 2048,
     hopSize: 512,
     nMels: 64,
     windowType: 'hann',
-    colormap: 'viridis',
+    colormap: 'magma', // mudado de 'viridis' para 'magma' (menos azul)
     preserveNativeResolution: false,
     outputScale: 1,
     logScale: true,
@@ -110,6 +112,19 @@
     applyZScore: false
   };
 
+  // NOVA SEÇÃO: configurações do overlay de cluster (ajustáveis aqui)
+  window.appConfig.clusterOverlay = {
+    // altura da barra (px) quando mode === 'bar'
+    barHeight: 20,
+    // opacidade da barra (0.0 - 1.0)
+    barAlpha: 0.75,
+    // paleta opcional; se null, o overlay usa sua paleta interna
+    // Exemplo: ['#e41a1c','#ff7f00','#4daf4a', ...]
+    clusterPalette: null,
+    // se true, desenha a linha preta de separação na base da barra (melhora contraste)
+    drawBaseLine: true
+  };
+
   // Mescla
   window.appConfig.getMergedProcessingOptions = function() {
     const proc = window.processingOptions || {};
@@ -122,7 +137,8 @@
       recording: Object.assign({}, window.appConfig.recording, proc.recording || {}),
       telemetry: Object.assign({}, window.appConfig.telemetry, proc.telemetry || {}),
       analyzer: Object.assign({}, window.appConfig.analyzer, proc.analyzer || {}),
-      pca: Object.assign({}, window.appConfig.pca, proc.pca || {})
+      pca: Object.assign({}, window.appConfig.pca, proc.pca || {}),
+      clusterOverlay: Object.assign({}, window.appConfig.clusterOverlay, (proc.clusterOverlay || {}))
     };
   };
 
