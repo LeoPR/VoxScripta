@@ -82,8 +82,8 @@
   window.appConfig.pca = {
     components: 8,
     learningRate: 0.05,            // base learning rate
-    lrDecayFactor: 1.0,           // multiplicador adicional (1.0 = sem mudança)
-    lrPower: 0.5,                 // lr = base / (nObs^lrPower), default sqrt -> 0.5
+    lrDecayFactor: 1.0,            // multiplicador adicional (1.0 = sem mudança)
+    lrPower: 0.5,                  // lr = base / (nObs^lrPower), default sqrt -> 0.5
     maxEpochs: 1,
     reorthogonalizeEvery: 3000,
 
@@ -93,10 +93,10 @@
     degenerateThreshold: 1e-6,     // norma menor que isto => degenerada
     replaceDegenerateWithBatch: true, // se degeneradas, substituir componentes pelo PCA batch inteiro
 
-    // seed para inicialização determinística (null ou número). Se definido, a inicialização das componentes é determinística
+    // seed para inicialização determinística (null ou número)
     initSeed: null,
 
-    // quando true, em caso de poucos frames em uma gravação, registra aviso (e retorna no model.warnings)
+    // avisos
     alertOnLowSamples: true,
     minSamplesPerRecordingToWarn: 4,
 
@@ -119,10 +119,26 @@
     // opacidade da barra (0.0 - 1.0)
     barAlpha: 0.75,
     // paleta opcional; se null, o overlay usa sua paleta interna
-    // Exemplo: ['#e41a1c','#ff7f00','#4daf4a', ...]
     clusterPalette: null,
     // se true, desenha a linha preta de separação na base da barra (melhora contraste)
     drawBaseLine: true
+  };
+
+  // NOVA SEÇÃO: configurações do KMeans Auto K (somente para busca de K, não altera overlay)
+  window.appConfig.kmeans = {
+    autoK: {
+      // Intervalo padrão de K a testar
+      defaultKmin: 3,
+      defaultKmax: 10,
+      // Reinicializações (kmeans++), maior valor dá mais estabilidade
+      defaultNInit: 10,
+      // Nº de componentes do PCA usadas no clustering (visual continua em 2D)
+      defaultDim: 3,
+      // Amostragem para Silhouette (limite superior)
+      silhouetteSample: 1500,
+      // Quantil de RMS (fala) para filtrar frames muito baixos (0..1). Ex.: 0.15 = descarta 15% mais baixos
+      minRmsQuantile: 0.15
+    }
   };
 
   // Mescla
@@ -138,7 +154,15 @@
       telemetry: Object.assign({}, window.appConfig.telemetry, proc.telemetry || {}),
       analyzer: Object.assign({}, window.appConfig.analyzer, proc.analyzer || {}),
       pca: Object.assign({}, window.appConfig.pca, proc.pca || {}),
-      clusterOverlay: Object.assign({}, window.appConfig.clusterOverlay, (proc.clusterOverlay || {}))
+      clusterOverlay: Object.assign({}, window.appConfig.clusterOverlay, (proc.clusterOverlay || {})),
+      // Mesclar kmeans.autoK
+      kmeans: {
+        autoK: Object.assign(
+          {},
+          (window.appConfig.kmeans && window.appConfig.kmeans.autoK) || {},
+          ((proc.kmeans || {}).autoK) || {}
+        )
+      }
     };
   };
 

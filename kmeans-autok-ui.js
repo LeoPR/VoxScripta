@@ -1,7 +1,10 @@
 // kmeans-auto-ui.js
-// UI mínima "Auto K" para KMeans: testa K de Kmin..Kmax com nInit, mostra métricas e permite selecionar K.
-// Integração mínima com pipeline existente; usa PCA ativo para projetar features.
-// Requisitos: window._pcaModel, uiAnalyzer.getTrainPool() (ou train pool ID list) e rec.__featuresCache.
+// UI "Auto K" para KMeans: testa K em Kmin..Kmax com nInit (kmeans++), mostra métricas e sugere 3 Ks.
+// - Lê defaults do config.js (appConfig.kmeans.autoK): Kmin/Kmax/nInit/Dim/silhouetteSample/minRmsQuantile.
+// - Filtra frames de fala de baixa energia via quantil de RMS (somente no Auto K).
+// - Recomenda pelo menos 3 opções de K: melhor silhouette, segundo melhor (diversificado) e "cotovelo" (elbow).
+// - Selecionar aplica window._kmeansModel e dispara 'training-changed'.
+// ATUALIZAÇÃO (patch painel): expõe inicializador global e tenta novamente após pequeno atraso para evitar race do DOM.
 
 (function(){
   'use strict';
@@ -12,21 +15,31 @@
     try {
       return window.appConfig && typeof window.appConfig.getMergedProcessingOptions === 'function'
         ? window.appConfig.getMergedProcessingOptions()
-        : { analyzer:{}, pca:{}, clusterOverlay:{} };
-    } catch { return { analyzer:{}, pca:{}, clusterOverlay:{} }; }
+        : { analyzer:{}, pca:{}, clusterOverlay:{}, kmeans:{ autoK:{} } };
+    } catch { return { analyzer:{}, pca:{}, clusterOverlay:{}, kmeans:{ autoK:{} } }; }
   }
 
   function normalizeFeatureVector(vec, nMels, sampleRate){
     for (let m = 0; m < nMels; m++) vec[m] = Math.log1p(Number.isFinite(vec[m]) ? vec[m] : 0);
     if (!sampleRate) sampleRate = 16000;
     const centroidIdx = nMels + 1;
-    if (centroidIdx < vec.length) vec[centroidIdx] = Number.isFinite(vec[centroidIdx]) ? (vec[centroidIdx] / (sampleRate/2)) : 0;
+    if (centroidIdx < vec.length) { vec[centroidIdx] = Number.isFinite(vec[centroidIdx]) ? (vec[centroidIdx] / (sampleRate/2)) : 0; }
     const zIdx = nMels + 2;
     if (zIdx < vec.length) { if (!Number.isFinite(vec[zIdx])) vec[zIdx] = 0; }
     return vec;
   }
 
-  function segmentSpeechMask(fr) {
+  function computeQuantile(arr, q) {
+    if (!arr.length) return 0;
+    const a = Float32Array.from(arr).slice().sort((x,y)=>x-y);
+    const pos = (a.length - 1) * Math.min(Math.max(q,0),1);
+    const base = Math.floor(pos);
+    const rest = pos - base;
+    if ((base+1) < a.length) return a[base] + rest * (a[base+1] - a[base]);
+    return a[base];
+  }
+
+  function segmentSpeechMaskAndRms(fr) {
     const merged = getMerged();
     const a = merged.analyzer || {};
     const p = merged.pca || {};
@@ -50,7 +63,7 @@
 
     const segFn = (window.segmentSilence || (window.analyzerOverlay && window.analyzerOverlay.segmentSilence));
     if (typeof segFn !== 'function') {
-      const all = new Uint8Array(frames); all.fill(1); return all;
+      const all = new Uint8Array(frames); all.fill(1); return { mask: all, rmsArr };
     }
     const segs = segFn(rmsArr, localMaxRms, { silenceRmsRatio, minSilenceFrames, minSpeechFrames }) || [];
     const mask = new Uint8Array(frames);
@@ -60,12 +73,14 @@
       const e = Math.min(frames-1, seg.endFrame|0);
       for (let f=s; f<=e; f++) mask[f] = 1;
     }
-    return mask;
+    return { mask, rmsArr };
   }
 
-  function sampleFramesIdx(mask, targetMax) {
+  function sampleFramesIdx(mask, targetMax, filterByIdxFn = null) {
     const idxs = [];
-    for (let i=0;i<mask.length;i++) if (mask[i]) idxs.push(i);
+    for (let i=0;i<mask.length;i++) {
+      if (mask[i] && (!filterByIdxFn || filterByIdxFn(i))) idxs.push(i);
+    }
     if (!targetMax || idxs.length <= targetMax) return idxs;
     const step = Math.ceil(idxs.length / targetMax);
     const out = [];
@@ -73,8 +88,7 @@
     return out;
   }
 
-  // Projetar: retorna Xflat para clustering (dimCluster) e X2d para visual (2D)
-  function buildProjectedDatasetFromTrainPool(maxPoints=5000, dimCluster=6) {
+  function buildProjectedDatasetFromTrainPool(maxPoints=5000, kDims=3, minRmsQuantile=0.15) {
     if (!window._pcaModel) throw new Error('PCA ativo ausente. Rode e selecione um treinamento.');
     const pca = window._pcaModel;
 
@@ -87,11 +101,8 @@
     const byId = new Map();
     for (const r of recs) if (r && r.id != null) byId.set(r.id, r);
 
-    const points = []; // high-dim
-    const points2 = []; // 2d for plot
+    const points = [];
     let dims = null, nMels = null, sampleRate = 16000;
-
-    const perRecCap = Math.max(2, Math.ceil(maxPoints / Math.max(1, trainPool.length)));
 
     for (const id of trainPool) {
       const rec = typeof id === 'object' ? id : byId.get(id);
@@ -101,8 +112,17 @@
       nMels = fr.meta && fr.meta.nMels ? fr.meta.nMels : Math.max(0, dims - 3);
       sampleRate = (fr.meta && fr.meta.sampleRate) ? fr.meta.sampleRate : 16000;
 
-      const mask = segmentSpeechMask(fr);
-      const idxs = sampleFramesIdx(mask, perRecCap);
+      const { mask, rmsArr } = segmentSpeechMaskAndRms(fr);
+
+      let thr = 0;
+      if (minRmsQuantile && minRmsQuantile > 0) {
+        const speechRms = [];
+        for (let i=0;i<rmsArr.length;i++) if (mask[i]) speechRms.push(rmsArr[i]);
+        thr = speechRms.length ? computeQuantile(speechRms, minRmsQuantile) : 0;
+      }
+
+      const perRecCap = Math.max(100, Math.ceil(maxPoints / Math.max(1, trainPool.length)));
+      const idxs = sampleFramesIdx(mask, perRecCap, (i)=> rmsArr[i] >= thr);
 
       const flat = fr.features;
       for (const f of idxs) {
@@ -110,34 +130,23 @@
         const vec = new Float32Array(dims);
         for (let d=0; d<dims; d++) vec[d] = flat[base + d];
         normalizeFeatureVector(vec, nMels, sampleRate);
-        const proj = pca.project(vec); // proj length = pca.k
-        // cluster dims: first dimCluster components (or less)
-        const cd = Math.min(dimCluster, proj.length);
-        const clusterVec = new Float32Array(cd);
-        for (let d=0; d<cd; d++) clusterVec[d] = proj[d] || 0;
-        points.push(clusterVec);
-        // visual 2D (first 2 comps)
-        const v2 = new Float32Array(2);
-        v2[0] = proj[0] || 0;
-        v2[1] = proj[1] || 0;
-        points2.push(v2);
+        const proj = pca.project(vec);
+        const x = new Float32Array(kDims);
+        for (let d=0; d<kDims; d++) x[d] = proj[d] || 0;
+        points.push(x);
       }
     }
 
-    if (!points.length) throw new Error('Nenhum frame de fala com features no Train Pool. Execute Analyze nas gravações.');
+    if (!points.length) throw new Error('Nenhum frame de fala com energia suficiente no Train Pool. Ajuste minRmsQuantile ou execute Analyze.');
 
     const n = points.length;
-    const Xflat = new Float32Array(n * points[0].length);
-    const X2flat = new Float32Array(n * 2);
-    const dim = points[0].length;
+    const Xflat = new Float32Array(n * kDims);
     for (let i=0;i<n;i++){
-      const off = i*dim;
+      const off = i*kDims;
       const p = points[i];
-      for (let d=0; d<dim; d++) Xflat[off+d] = p[d];
-      X2flat[i*2+0] = points2[i][0];
-      X2flat[i*2+1] = points2[i][1];
+      for (let d=0; d<kDims; d++) Xflat[off+d] = p[d];
     }
-    return { Xflat, nRows: n, dim, X2flat };
+    return { Xflat, nRows: n, dim: kDims };
   }
 
   function ensureKModelShape(model) {
@@ -201,7 +210,66 @@
     }
   }
 
-  function createPanel() {
+  // "Cotovelo" (elbow) por distância à reta Kmin-Kmax
+  function findElbowK(results) {
+    if (!results || results.length < 3) return null;
+    const xs = results.map(r=>r.K);
+    const ys = results.map(r=>r.inertia);
+    const x0 = xs[0], y0 = ys[0];
+    const xN = xs[xs.length-1], yN = ys[ys.length-1];
+
+    function pointLineDistance(x, y, x1, y1, x2, y2) {
+      const A = x - x1, B = y - y1, C = x2 - x1, D = y2 - y1;
+      const dot = A * C + B * D;
+      const len_sq = C * C + D * D || 1e-12;
+      const param = dot / len_sq;
+      const xx = x1 + param * C;
+      const yy = y1 + param * D;
+      const dx = x - xx, dy = y - yy;
+      return Math.sqrt(dx*dx + dy*dy);
+    }
+
+    let bestK = null, bestDist = -Infinity;
+    for (let i=1; i<xs.length-1; i++) {
+      const d = pointLineDistance(xs[i], ys[i], x0, y0, xN, yN);
+      if (d > bestDist) { bestDist = d; bestK = xs[i]; }
+    }
+    return bestK;
+  }
+
+  function pickRecommendations(results) {
+    if (!results || !results.length) return [];
+    const bySil = results.slice().sort((a,b)=> b.silhouette - a.silhouette);
+    const picked = [];
+    const usedK = new Set();
+
+    if (bySil.length) { picked.push(bySil[0]); usedK.add(bySil[0].K); }
+
+    for (let i=1;i<bySil.length;i++) {
+      const cand = bySil[i];
+      if (!usedK.has(cand.K) && Math.abs(cand.K - picked[0].K) >= 2) {
+        picked.push(cand); usedK.add(cand.K);
+        break;
+      }
+    }
+    if (picked.length < 2 && bySil.length > 1) {
+      picked.push(bySil[1]); usedK.add(bySil[1].K);
+    }
+
+    const elbowK = findElbowK(results);
+    if (elbowK != null && !usedK.has(elbowK)) {
+      const elbowRes = results.find(r=>r.K === elbowK);
+      if (elbowRes) { picked.push(elbowRes); usedK.add(elbowK); }
+    }
+
+    for (const r of bySil) {
+      if (picked.length >= 3) break;
+      if (!usedK.has(r.K)) { picked.push(r); usedK.add(r.K); }
+    }
+    return picked.slice(0,3);
+  }
+
+  function createPanel(defaults) {
     const trainPanel = document.getElementById('train-panel');
     if (!trainPanel) return null;
     let panel = document.getElementById(PANEL_ID);
@@ -214,15 +282,22 @@
     panel.style.paddingTop = '8px';
     panel.style.fontSize = '13px';
 
+    const defKmin = Math.max(3, defaults.defaultKmin || 3);
+    const defKmax = Math.max(defKmin, defaults.defaultKmax || 10);
+    const defNInit = Math.max(1, defaults.defaultNInit || 10);
+    const defDim = Math.max(2, defaults.defaultDim || 3);
+
     panel.innerHTML = `
       <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
         <strong>Auto K (KMeans)</strong>
-        <label>Kmin <input id="ak-kmin" type="number" value="2" min="2" style="width:60px"/></label>
-        <label>Kmax <input id="ak-kmax" type="number" value="8" min="3" style="width:60px"/></label>
-        <label>nInit <input id="ak-ninit" type="number" value="5" min="1" style="width:60px"/></label>
+        <label>Kmin <input id="ak-kmin" type="number" value="${defKmin}" min="2" style="width:60px"/></label>
+        <label>Kmax <input id="ak-kmax" type="number" value="${defKmax}" min="2" style="width:60px"/></label>
+        <label>nInit <input id="ak-ninit" type="number" value="${defNInit}" min="1" style="width:60px"/></label>
+        <label>Dim (PCA) <input id="ak-kdim" type="number" value="${defDim}" min="2" style="width:60px" title="Nº de componentes do PCA usadas no KMeans"/></label>
         <button id="ak-run" class="small">Executar</button>
         <span id="ak-status" style="color:#666"></span>
       </div>
+      <div id="ak-reco" style="margin-top:10px;"></div>
       <div style="display:flex;gap:12px;margin-top:8px;flex-wrap:wrap;">
         <canvas id="ak-plot-inertia"></canvas>
         <canvas id="ak-plot-sil"></canvas>
@@ -234,32 +309,35 @@
   }
 
   async function runAutoK() {
-    const panel = createPanel();
+    const merged = getMerged();
+    const akCfg = (merged.kmeans && merged.kmeans.autoK) || {};
+    const silhouetteSample = akCfg.silhouetteSample || 1500;
+    const minRmsQuantile = akCfg.minRmsQuantile || 0.15;
+
+    const panel = document.getElementById(PANEL_ID) || createPanel(akCfg);
     const kminEl = panel.querySelector('#ak-kmin');
     const kmaxEl = panel.querySelector('#ak-kmax');
     const ninitEl = panel.querySelector('#ak-ninit');
+    const kdimEl = panel.querySelector('#ak-kdim');
     const statusEl = panel.querySelector('#ak-status');
     const plotInertia = panel.querySelector('#ak-plot-inertia');
     const plotSil = panel.querySelector('#ak-plot-sil');
     const resDiv = panel.querySelector('#ak-results');
+    const recoDiv = panel.querySelector('#ak-reco');
 
-    const Kmin = Math.max(2, parseInt(kminEl.value || '2',10));
-    let Kmax = Math.max(Kmin, parseInt(kmaxEl.value || '8',10));
-    const nInit = Math.max(1, parseInt(ninitEl.value || '5',10));
-
-    if (Kmax <= Kmin) {
-      Kmax = Kmin + 1;
-      kmaxEl.value = Kmax;
-    }
+    let Kmin = Math.max(3, parseInt(kminEl.value || String(akCfg.defaultKmin || 3),10));
+    let Kmax = Math.max(Kmin, parseInt(kmaxEl.value || String(akCfg.defaultKmax || 10),10));
+    const nInit = Math.max(1, parseInt(ninitEl.value || String(akCfg.defaultNInit || 10),10));
 
     if (!window._pcaModel) { alert('PCA ativo ausente. Rode/Selecione um treinamento.'); return; }
+    const pcaK = window._pcaModel.k || 2;
+    let kDims = Math.max(2, parseInt(kdimEl.value || String(akCfg.defaultDim || 3),10));
+    if (kDims > pcaK) { kDims = pcaK; kdimEl.value = String(kDims); }
 
     let dataset;
     try {
-      statusEl.textContent = 'Coletando e projetando dados...';
-      // Para clustering: usar mais componentes (até 8) para evitar simplificação excessiva
-      const clusterDim = Math.min(Math.max(4, (window._pcaModel.k || 8)), 8);
-      dataset = buildProjectedDatasetFromTrainPool(5000, clusterDim);
+      statusEl.textContent = `Coletando e projetando dados (Dim PCA=${kDims}, filtro RMS q=${minRmsQuantile})...`;
+      dataset = buildProjectedDatasetFromTrainPool(5000, kDims, minRmsQuantile);
     } catch (e) {
       console.error(e);
       alert('Falha ao coletar/projetar dados: ' + (e && e.message ? e.message : e));
@@ -268,11 +346,37 @@
     }
 
     try {
-      statusEl.textContent = `Executando KMeans para K=${Kmin}..${Kmax} (nInit=${nInit})...`;
+      statusEl.textContent = `Executando KMeans para K=${Kmin}..${Kmax} (nInit=${nInit}, Dim=${kDims})...`;
       const results = await window.kmeansEvaluator.runRange(dataset.Xflat, dataset.nRows, dataset.dim, {
-        Kmin, Kmax, nInit, maxIter: 200, tol: 1e-4, silhouetteSample: Math.min(1500, dataset.nRows)
+        Kmin, Kmax, nInit, maxIter: 200, tol: 1e-4, silhouetteSample: Math.min(silhouetteSample, dataset.nRows)
       });
       statusEl.textContent = 'Concluído. Selecione um K abaixo.';
+
+      const recos = pickRecommendations(results);
+      const recoDivEl = panel.querySelector('#ak-reco');
+      if (recos.length) {
+        const items = recos.map(r => `
+          <div style="display:flex;align-items:center;gap:8px;">
+            <span><b>K=${r.K}</b></span>
+            <span>Sil: ${r.silhouette.toFixed(3)}</span>
+            <span>Inertia: ${r.inertia.toFixed(1)}</span>
+            <span>CH: ${r.ch.toFixed(2)}</span>
+            <span>DB: ${isFinite(r.db)?r.db.toFixed(3):'∞'}</span>
+            <button class="small ak-select-reco" data-k="${r.K}">Selecionar</button>
+          </div>
+        `).join('');
+        recoDivEl.innerHTML = `<div style="margin:6px 0;"><strong>Recomendações:</strong></div>${items}`;
+        const btns = recoDivEl.querySelectorAll('.ak-select-reco');
+        btns.forEach(btn => {
+          btn.addEventListener('click', () => {
+            const k = parseInt(btn.getAttribute('data-k'),10);
+            const sel = results.find(x=>x.K===k);
+            if (sel) applySelectedK(sel, dataset.dim);
+          });
+        });
+      } else {
+        recoDivEl.innerHTML = '';
+      }
 
       const xs = results.map(r=>r.K);
       drawMiniPlot(plotInertia, xs, results.map(r=>r.inertia), '#1f77b4', 'Inertia (SSE) vs K');
@@ -332,13 +436,15 @@
 
     document.dispatchEvent(new CustomEvent('training-changed', {
       detail: { activeId: (window.modelStore && window.modelStore.getActiveTrainingId && window.modelStore.getActiveTrainingId()) || null,
-        meta: { k: model.k, autoK: true } }
+        meta: { k: model.k, autoK: true, dimUsed: dim } }
     }));
-    alert(`KMeans aplicado com K=${model.k}. Abra o overlay ou visualizador para ver os clusters.`);
+    alert(`KMeans aplicado com K=${model.k} usando Dim PCA=${dim}. Abra o overlay ou visualizador para ver os clusters.`);
   }
 
   function ensurePanelAndBind() {
-    const panel = createPanel();
+    const merged = getMerged();
+    const akCfg = (merged.kmeans && merged.kmeans.autoK) || {};
+    const panel = createPanel(akCfg);
     if (!panel) return;
     const runBtn = panel.querySelector('#ak-run');
     if (runBtn && !runBtn.__bound) {
@@ -352,5 +458,9 @@
   } else {
     ensurePanelAndBind();
   }
+
+  // PATCH PAINEL: expõe inicializador global (para forçar criação via console) e tenta novamente após 700ms
+  window.kmeansAutoEnsure = ensurePanelAndBind;
+  setTimeout(ensurePanelAndBind, 700);
 
 })();

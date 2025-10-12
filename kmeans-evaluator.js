@@ -3,8 +3,10 @@
 // Calcula métricas: inertia (SSE), silhouette (amostrado), Calinski-Harabasz (CH) e Davies-Bouldin (DB).
 // API: window.kmeansEvaluator.runRange(Xflat, nRows, dim, options)
 // options: { Kmin=2, Kmax=8, nInit=5, maxIter=200, tol=1e-4, silhouetteSample=1500, randomSeed=null }
+//
 // Retorno: Promise<array de resultados ordenados por K> onde cada item:
 // { K, inertia, silhouette, ch, db, centroids: Float32Array(K*dim), sizes: Int32Array(K) }
+// Também exporta window.kmeansEvaluator.findElbow(results) -> K (valor K determinado pelo "cotovelo")
 
 (function(){
   'use strict';
@@ -48,7 +50,9 @@
     for (let d=0; d<dim; d++) centroids[d] = X[idx0*dim + d];
 
     const distSq = new Float64Array(n);
-    for (let i=0;i<n;i++) distSq[i] = sqrDist(X, i*dim, centroids, 0, dim);
+    for (let i=0;i<n;i++) {
+      distSq[i] = sqrDist(X, i*dim, centroids, 0, dim);
+    }
     let chosen = 1;
 
     while (chosen < k) {
@@ -90,8 +94,8 @@
     const sums = new Float64Array(k*dim);
     const counts = new Int32Array(k);
 
-    let prevShift = Infinity;
     for (let iter=0; iter<maxIter; iter++) {
+      // assign
       for (let i=0;i<n;i++) {
         let bestC = 0;
         let bestD = Infinity;
@@ -111,7 +115,9 @@
         const c = assignments[i];
         counts[c]++;
         const xOff = i*dim, cOff = c*dim;
-        for (let d=0; d<dim; d++) sums[cOff + d] += X[xOff + d];
+        for (let d=0; d<dim; d++) {
+          sums[cOff + d] += X[xOff + d];
+        }
       }
 
       let shift = 0;
@@ -135,8 +141,7 @@
         }
       }
 
-      if (shift < tol) { prevShift = shift; break; }
-      prevShift = shift;
+      if (shift < tol) break;
     }
 
     let inertia = 0;
@@ -214,8 +219,9 @@
       Si[c] += dist;
       denom[c] += 1;
     }
-    for (let c=0;c<k;c++) Si[c] = denom[c] ? (Si[c]/denom[c]) : 0;
-
+    for (let c=0;c<k;c++) {
+      Si[c] = denom[c] ? (Si[c]/denom[c]) : 0;
+    }
     const RijMax = new Float64Array(k).fill(0);
     for (let i=0;i<k;i++){
       for (let j=0;j<k;j++){
@@ -268,6 +274,18 @@
     return countS ? (sumS / countS) : 0;
   }
 
+  function computeElbowFromResults(results) {
+    if (!results || results.length < 3) return results && results.length ? results[0].K : null;
+    const inertias = results.map(r=>r.inertia);
+    let bestIdx = 1;
+    let bestVal = -Infinity;
+    for (let i=1;i<inertias.length-1;i++) {
+      const d2 = inertias[i-1] - 2*inertias[i] + inertias[i+1];
+      if (d2 > bestVal) { bestVal = d2; bestIdx = i; }
+    }
+    return results[bestIdx].K;
+  }
+
   async function runRange(Xflat, nRows, dim, options) {
     const Kmin = Math.max(2, options && options.Kmin || 2);
     const Kmax = Math.max(Kmin, options && options.Kmax || 8);
@@ -305,5 +323,8 @@
     return results;
   }
 
-  window.kmeansEvaluator = { runRange };
+  window.kmeansEvaluator = {
+    runRange,
+    findElbow: computeElbowFromResults
+  };
 })();
