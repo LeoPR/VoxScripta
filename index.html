@@ -87,8 +87,11 @@
 
   <script src="db.js"></script>
   <script src="config.js"></script>
-  <script src="audio.js"></script>
-  <script src="waveform.js"></script>
+
+  <!-- Etapa 3: áudio + waveform unificados -->
+  <script src="core/core-audio.js"></script>
+
+  <!-- Ainda separados (serão unificados na Etapa 4) -->
   <script src="recorder.js"></script>
   <script src="sessions.js"></script>
 
@@ -113,16 +116,15 @@
   <!-- Auto K (KMeans) -->
   <script src="kmeans-evaluator.js"></script>
   <script src="kmeans-auto-ui.js"></script>
-  <!-- REMOVIDO: kmeans-auto-bootstrap.js (Etapa 2) -->
 
-  <!-- Etapa A: gerenciamento de treinamentos (persistência e UI) -->
+  <!-- Gerenciamento de treinamentos -->
   <script src="model-store.js"></script>
   <script src="pca-model-manager-ui.js"></script>
 
   <!-- Overlay de clusters no espectrograma -->
   <script src="spectrogram-cluster-overlay.js"></script>
 
-  <!-- Etapa 1: compatibilidade/aliases (não altera comportamento) -->
+  <!-- Compatibilidade (namespaces App.*) -->
   <script src="app-compat.js"></script>
 </body>
 </html>
